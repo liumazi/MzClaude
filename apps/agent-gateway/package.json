@@ -1,0 +1,23 @@
+{
+  "name": "@mzclaude/agent-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/main.js",
+    "test": "npm run build && node --test \"dist/tests/**/*.test.js\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "ws": "^8.20.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "latest"
+  }
+}

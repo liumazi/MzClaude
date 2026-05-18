@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mzclaude.local/schemas/event.schema.json",
+  "title": "MzClaude Gateway Event",
+  "type": "object",
+  "required": ["protocolVersion", "sessionId", "type", "timestamp"],
+  "properties": {
+    "protocolVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "session_started",
+        "text_delta",
+        "tool_started",
+        "tool_delta",
+        "tool_finished",
+        "permission_request",
+        "question_request",
+        "permission_denied",
+        "result",
+        "error",
+        "run_stopped"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

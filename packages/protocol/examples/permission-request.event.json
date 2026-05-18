@@ -1,0 +1,15 @@
+{
+  "protocolVersion": 1,
+  "sessionId": "sess_01",
+  "runId": "run_01",
+  "type": "permission_request",
+  "timestamp": "2026-05-18T08:00:01.000Z",
+  "payload": {
+    "requestId": "perm_01",
+    "toolName": "Bash",
+    "input": {
+      "command": "npm test"
+    },
+    "suggestions": []
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mzclaude.local/schemas/health.schema.json",
+  "title": "MzClaude Gateway Health",
+  "type": "object",
+  "required": ["protocolVersion", "status", "version", "config"],
+  "properties": {
+    "protocolVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["ok"]
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config": {
+      "type": "object",
+      "required": ["host", "port", "authRequired", "dataDirConfigured"],
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "authRequired": {
+          "type": "boolean"
+        },
+        "dataDirConfigured": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

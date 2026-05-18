@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 0
+  },
+  "agent": {
+    "defaultPermissionMode": "default",
+    "planPermissionMode": "plan",
+    "allowedTools": ["Read", "Glob", "Grep"],
+    "disallowedTools": []
+  },
+  "security": {
+    "requireLaunchToken": true,
+    "allowRemoteHosts": false,
+    "redactSecretsInLogs": true
+  },
+  "sessions": {
+    "persistSession": true
+  }
+}

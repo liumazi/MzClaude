@@ -1,0 +1,56 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{7F8B5B5D-09CE-4B49-9E7D-ECAC9504D8E1}</ProjectGuid>
+        <ProjectVersion>20.0</ProjectVersion>
+        <FrameworkType>VCL</FrameworkType>
+        <MainSource>MzClaude.dpr</MainSource>
+        <Base>True</Base>
+        <Config Condition="'$(Config)'==''">Debug</Config>
+        <TargetedPlatforms>1</TargetedPlatforms>
+        <AppType>Application</AppType>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Base)'!=''">
+        <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;Vcl;$(DCC_Namespace)</DCC_Namespace>
+        <VerInfo_Keys>CompanyName=;FileDescription=MzClaude;FileVersion=1.0.0.0;InternalName=MzClaude;LegalCopyright=;OriginalFilename=MzClaude.exe;ProductName=MzClaude;ProductVersion=1.0.0.0</VerInfo_Keys>
+        <SanitizedProjectName>MzClaude</SanitizedProjectName>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Config)'=='Debug'">
+        <Debug>true</Debug>
+        <DCC_Define>DEBUG;$(DCC_Define)</DCC_Define>
+        <DCC_DebugInfoInExe>true</DCC_DebugInfoInExe>
+        <DCC_UsePackage>vcl;rtl;$(DCC_UsePackage)</DCC_UsePackage>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Config)'=='Release'">
+        <Debug>false</Debug>
+        <DCC_Define>RELEASE;$(DCC_Define)</DCC_Define>
+        <DCC_DebugInfoInExe>false</DCC_DebugInfoInExe>
+        <DCC_UsePackage>vcl;rtl;$(DCC_UsePackage)</DCC_UsePackage>
+    </PropertyGroup>
+    <ItemGroup>
+        <DelphiCompile Include="$(MainSource)">
+            <MainSource>MainSource</MainSource>
+        </DelphiCompile>
+        <DCCReference Include="src\App\AppBootstrap.pas"/>
+        <DCCReference Include="src\Protocol\GatewayProtocol.pas"/>
+        <DCCReference Include="src\Services\AppSettings.pas"/>
+        <DCCReference Include="src\Services\WinHttpWebSocket.pas"/>
+        <DCCReference Include="src\Services\GatewayEventsClient.pas"/>
+        <DCCReference Include="src\Services\GatewayHttpClient.pas"/>
+        <DCCReference Include="src\Services\GatewayProcessService.pas"/>
+        <DCCReference Include="src\UI\ApprovalDialog.pas"/>
+        <DCCReference Include="src\UI\QuestionDialog.pas"/>
+        <DCCReference Include="src\UI\MainForm.pas">
+            <Form>MzClaudeMainForm</Form>
+        </DCCReference>
+        <DCCReference Include="src\ViewModels\MainViewModel.pas"/>
+        <BuildConfiguration Include="Release">
+            <Key>Cfg_2</Key>
+            <CfgParent>Base</CfgParent>
+        </BuildConfiguration>
+        <BuildConfiguration Include="Debug">
+            <Key>Cfg_1</Key>
+            <CfgParent>Base</CfgParent>
+        </BuildConfiguration>
+    </ItemGroup>
+    <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
+</Project>
