@@ -10,6 +10,7 @@ export type AgentRunRequest = {
   runId: string;
   prompt: string;
   approvals: ApprovalBridge;
+  abortController?: AbortController;
 };
 
 export type AgentRunner = {
@@ -27,6 +28,7 @@ export function createSdkAgentRunner(): AgentRunner {
           permissionMode: normalizePermissionMode(request.session.permissionPreset),
           model: request.session.model,
           resume: request.session.resumeSessionId ?? request.session.sdkSessionId,
+          abortController: request.abortController,
           canUseTool: (toolName, input, options) => request.approvals.requestPermission({
             toolName,
             input,

@@ -10,7 +10,9 @@ import WebSocket from "ws";
 import { createLogger } from "../src/logging/logger.js";
 import { createGatewayServer } from "../src/server/server.js";
 import type { GatewayConfig } from "../src/config/config.js";
+import type { AgentRunRequest } from "../src/agent/agentRunner.js";
 import type { GatewayEvent } from "../src/protocol/types.js";
+import { SessionStore } from "../src/sessions/sessionStore.js";
 
 const baseConfig: GatewayConfig = {
   protocolVersion: 1,
@@ -422,6 +424,269 @@ test("POST /api/sessions/{id}/approvals/{requestId} returns a denial reason to t
   }
 });
 
+test("GET /api/sessions returns recent sessions ordered by updatedAt", async () => {
+  const workspacePath = await createTempWorkspace();
+  const gateway = createGatewayServer({
+    config: { ...baseConfig, dataDir: undefined },
+    logger: silentLogger(),
+    sessionStore: new SessionStore()
+  });
+  await gateway.start();
+
+  try {
+    const first = await createSession(gateway.port, workspacePath);
+    const second = await createSession(gateway.port, workspacePath);
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions`, {
+      headers: jsonHeaders()
+    });
+    const body = await response.json() as {
+      protocolVersion: number;
+      sessions: { id: string; workspacePath: string }[];
+    };
+
+    assert.equal(response.status, 200);
+    assert.equal(body.protocolVersion, 1);
+    assert.equal(body.sessions.length, 2);
+    assert.equal(body.sessions[0].id, second.id);
+    assert.equal(body.sessions[1].id, first.id);
+    assert.equal(body.sessions[0].workspacePath, workspacePath);
+  } finally {
+    await gateway.stop();
+    await fs.rm(workspacePath, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/sessions survives gateway restart when dataDir is configured", async () => {
+  const workspacePath = await createTempWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "mzclaude-gateway-data-"));
+  const config: GatewayConfig = {
+    ...baseConfig,
+    dataDir
+  };
+
+  const firstGateway = createGatewayServer({
+    config,
+    logger: silentLogger(),
+    sessionStore: new SessionStore(dataDir)
+  });
+  await firstGateway.start();
+
+  let sessionId = "";
+  try {
+    const session = await createSession(firstGateway.port, workspacePath);
+    sessionId = session.id;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    await firstGateway.stop();
+  }
+
+  const secondGateway = createGatewayServer({
+    config,
+    logger: silentLogger(),
+    sessionStore: new SessionStore(dataDir)
+  });
+  await secondGateway.start();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${secondGateway.port}/api/sessions`, {
+      headers: jsonHeaders()
+    });
+    const body = await response.json() as {
+      sessions: { id: string; status: string }[];
+    };
+
+    assert.equal(response.status, 200);
+    assert.equal(body.sessions.length, 1);
+    assert.equal(body.sessions[0].id, sessionId);
+    assert.equal(body.sessions[0].status, "idle");
+  } finally {
+    await secondGateway.stop();
+    await fs.rm(workspacePath, { recursive: true, force: true });
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/sessions persists sdkSessionId after a successful run", async () => {
+  const workspacePath = await createTempWorkspace();
+  const gateway = createGatewayServer({
+    config: baseConfig,
+    logger: silentLogger(),
+    agentRunner: {
+      run: async function* ({ sessionId, runId }): AsyncGenerator<GatewayEvent> {
+        yield createTestEvent(sessionId, "result", {
+          status: "success",
+          text: "Done",
+          sdkSessionId: "sdk-session-42"
+        }, runId);
+      }
+    }
+  });
+  await gateway.start();
+
+  try {
+    const session = await createSession(gateway.port, workspacePath);
+    await fetch(`http://127.0.0.1:${gateway.port}/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ prompt: "Hello" })
+    });
+
+    await waitFor(async () => {
+      const listResponse = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions`, {
+        headers: jsonHeaders()
+      });
+      const listBody = await listResponse.json() as {
+        sessions: { id: string; sdkSessionId?: string; status: string }[];
+      };
+      return listBody.sessions[0]?.sdkSessionId === "sdk-session-42"
+        && listBody.sessions[0]?.status === "idle";
+    });
+  } finally {
+    await gateway.stop();
+    await fs.rm(workspacePath, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/sessions accepts resumeSessionId for SDK resume", async () => {
+  const workspacePath = await createTempWorkspace();
+  let capturedResume: string | undefined;
+  const gateway = createGatewayServer({
+    config: baseConfig,
+    logger: silentLogger(),
+    agentRunner: {
+      run: async function* (request: AgentRunRequest): AsyncGenerator<GatewayEvent> {
+        capturedResume = request.session.resumeSessionId ?? request.session.sdkSessionId;
+        yield createTestEvent(request.sessionId, "result", { status: "success", text: "ok" }, request.runId);
+      }
+    }
+  });
+  await gateway.start();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ workspacePath, resumeSessionId: "sdk-resume-1" })
+    });
+    const session = await response.json() as { id: string };
+
+    assert.equal(response.status, 201);
+    await fetch(`http://127.0.0.1:${gateway.port}/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ prompt: "Continue" })
+    });
+
+    await waitFor(async () => capturedResume === "sdk-resume-1");
+  } finally {
+    await gateway.stop();
+    await fs.rm(workspacePath, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/sessions/{id}/stop emits run_stopped and cancels the runner", async () => {
+  const workspacePath = await createTempWorkspace();
+  let releaseRunner: (() => void) | undefined;
+  const runnerCanFinish = new Promise<void>((resolve) => {
+    releaseRunner = resolve;
+  });
+  const gateway = createGatewayServer({
+    config: baseConfig,
+    logger: silentLogger(),
+    agentRunner: {
+      run: async function* (request: AgentRunRequest): AsyncGenerator<GatewayEvent> {
+        yield createTestEvent(request.sessionId, "text_delta", { text: "Working" }, request.runId);
+        await Promise.race([
+          runnerCanFinish,
+          new Promise<void>((resolve) => {
+            request.abortController?.signal.addEventListener("abort", () => resolve(), { once: true });
+          })
+        ]);
+
+        if (request.abortController?.signal.aborted) {
+          return;
+        }
+
+        yield createTestEvent(request.sessionId, "result", { status: "success", text: "Done" }, request.runId);
+      }
+    }
+  });
+  await gateway.start();
+
+  try {
+    const session = await createSession(gateway.port, workspacePath);
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${gateway.port}/api/sessions/${session.id}/events?token=launch-token`
+    );
+    await waitForOpen(socket);
+
+    const eventsPromise = collectMessages(socket, 2);
+    await fetch(`http://127.0.0.1:${gateway.port}/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ prompt: "Start" })
+    });
+
+    const stopResponse = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions/${session.id}/stop`, {
+      method: "POST",
+      headers: jsonHeaders()
+    });
+    const events = await eventsPromise;
+    const stopEvent = events.find((event) => event.type === "run_stopped");
+    const stopBody = await stopResponse.json() as {
+      sessionId: string;
+      status: string;
+      runId: string;
+    };
+
+    assert.equal(stopResponse.status, 200);
+    assert.equal(stopBody.status, "stopped");
+    assert.ok(stopEvent);
+    assert.equal(stopEvent?.type, "run_stopped");
+    assert.equal(stopEvent?.payload.reason, "user_cancelled");
+
+    const listResponse = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions`, {
+      headers: jsonHeaders()
+    });
+    const listBody = await listResponse.json() as {
+      sessions: { id: string; status: string }[];
+    };
+    assert.equal(listBody.sessions[0].status, "stopped");
+
+    socket.close();
+  } finally {
+    releaseRunner?.();
+    await gateway.stop();
+    await fs.rm(workspacePath, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/sessions/{id}/stop rejects when session is not running", async () => {
+  const workspacePath = await createTempWorkspace();
+  const gateway = createGatewayServer({
+    config: baseConfig,
+    logger: silentLogger()
+  });
+  await gateway.start();
+
+  try {
+    const session = await createSession(gateway.port, workspacePath);
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions/${session.id}/stop`, {
+      method: "POST",
+      headers: jsonHeaders()
+    });
+    const body = await response.json() as {
+      error: { code: string; message: string };
+    };
+
+    assert.equal(response.status, 409);
+    assert.equal(body.error.code, "session_not_running");
+  } finally {
+    await gateway.stop();
+    await fs.rm(workspacePath, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/sessions/{id}/approvals/{requestId} answers a pending question request", async () => {
   const workspacePath = await createTempWorkspace();
   const gateway = createGatewayServer({
@@ -604,4 +869,16 @@ function postApproval(
     headers: jsonHeaders(),
     body: JSON.stringify(body)
   });
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  throw new Error("Timed out waiting for condition.");
 }

@@ -51,9 +51,24 @@ type
     ErrorMessage: string;
   end;
 
+  TGatewayListSessionsResult = record
+    Status: TGatewayCommandStatus;
+    StatusCode: Integer;
+    Sessions: TGatewaySessionListResponse;
+    ErrorMessage: string;
+  end;
+
+  TGatewayStopSessionResult = record
+    Status: TGatewayCommandStatus;
+    StatusCode: Integer;
+    StopResponse: TGatewayStopSessionResponse;
+    ErrorMessage: string;
+  end;
+
   TGatewayHttpClient = class
   public
     function CheckHealth(const Settings: TGatewaySettings): TGatewayHealthCheckResult;
+    function ListSessions(const Settings: TGatewaySettings): TGatewayListSessionsResult;
     function CreateSession(
       const Settings: TGatewaySettings;
       const Request: TGatewayCreateSessionRequest): TGatewayCreateSessionResult;
@@ -61,6 +76,9 @@ type
       const Settings: TGatewaySettings;
       const SessionId: string;
       const Request: TGatewaySendMessageRequest): TGatewaySendMessageResult;
+    function StopSession(
+      const Settings: TGatewaySettings;
+      const SessionId: string): TGatewayStopSessionResult;
     function SubmitApproval(
       const Settings: TGatewaySettings;
       const SessionId: string;
@@ -174,6 +192,69 @@ begin
   end;
 end;
 
+function TGatewayHttpClient.ListSessions(const Settings: TGatewaySettings): TGatewayListSessionsResult;
+var
+  Client: THTTPClient;
+  Headers: TNetHeaders;
+  Response: IHTTPResponse;
+  Body: string;
+begin
+  Result.Status := gcConnectionFailed;
+  Result.StatusCode := 0;
+  Result.ErrorMessage := '';
+
+  Headers := BuildGetHeaders(Settings);
+  Client := THTTPClient.Create;
+  try
+    try
+      Response := Client.Get(Settings.BaseUrl + '/api/sessions', nil, Headers);
+      Result.StatusCode := Response.StatusCode;
+      Body := Response.ContentAsString(TEncoding.UTF8);
+
+      if Response.StatusCode = 200 then
+      begin
+        try
+          Result.Sessions := TGatewaySessionListResponse.FromJson(Body);
+          Result.Status := gcSuccess;
+        except
+          on E: Exception do
+          begin
+            Result.Status := gcInvalidResponse;
+            Result.ErrorMessage := E.Message;
+          end;
+        end;
+        Exit;
+      end;
+
+      if Response.StatusCode = 401 then
+      begin
+        Result.Status := gcUnauthorized;
+        try
+          Result.ErrorMessage := TGatewayErrorResponse.FromJson(Body).Message;
+        except
+          Result.ErrorMessage := 'Gateway rejected the configured launch token.';
+        end;
+        Exit;
+      end;
+
+      Result.Status := gcHttpError;
+      try
+        Result.ErrorMessage := TGatewayErrorResponse.FromJson(Body).Message;
+      except
+        Result.ErrorMessage := Format('Gateway returned HTTP %d.', [Response.StatusCode]);
+      end;
+    except
+      on E: Exception do
+      begin
+        Result.Status := gcConnectionFailed;
+        Result.ErrorMessage := E.Message;
+      end;
+    end;
+  finally
+    Client.Free;
+  end;
+end;
+
 function TGatewayHttpClient.CreateSession(
   const Settings: TGatewaySettings;
   const Request: TGatewayCreateSessionRequest): TGatewayCreateSessionResult;
@@ -274,6 +355,78 @@ begin
       begin
         try
           Result.Message := TGatewaySendMessageResponse.FromJson(Body);
+          Result.Status := gcSuccess;
+        except
+          on E: Exception do
+          begin
+            Result.Status := gcInvalidResponse;
+            Result.ErrorMessage := E.Message;
+          end;
+        end;
+        Exit;
+      end;
+
+      if Response.StatusCode = 401 then
+      begin
+        Result.Status := gcUnauthorized;
+        try
+          Result.ErrorMessage := TGatewayErrorResponse.FromJson(Body).Message;
+        except
+          Result.ErrorMessage := 'Gateway rejected the configured launch token.';
+        end;
+        Exit;
+      end;
+
+      Result.Status := gcHttpError;
+      try
+        Result.ErrorMessage := TGatewayErrorResponse.FromJson(Body).Message;
+      except
+        Result.ErrorMessage := Format('Gateway returned HTTP %d.', [Response.StatusCode]);
+      end;
+    except
+      on E: Exception do
+      begin
+        Result.Status := gcConnectionFailed;
+        Result.ErrorMessage := E.Message;
+      end;
+    end;
+  finally
+    Client.Free;
+    RequestBody.Free;
+  end;
+end;
+
+function TGatewayHttpClient.StopSession(
+  const Settings: TGatewaySettings;
+  const SessionId: string): TGatewayStopSessionResult;
+var
+  Client: THTTPClient;
+  Headers: TNetHeaders;
+  Response: IHTTPResponse;
+  Body: string;
+  RequestBody: TStringStream;
+begin
+  Result.Status := gcConnectionFailed;
+  Result.StatusCode := 0;
+  Result.ErrorMessage := '';
+
+  Headers := BuildJsonHeaders(Settings);
+  RequestBody := TStringStream.Create('{}', TEncoding.UTF8);
+  Client := THTTPClient.Create;
+  try
+    try
+      Response := Client.Post(
+        Format('%s/api/sessions/%s/stop', [Settings.BaseUrl, SessionId]),
+        RequestBody,
+        nil,
+        Headers);
+      Result.StatusCode := Response.StatusCode;
+      Body := Response.ContentAsString(TEncoding.UTF8);
+
+      if Response.StatusCode = 200 then
+      begin
+        try
+          Result.StopResponse := TGatewayStopSessionResponse.FromJson(Body);
           Result.Status := gcSuccess;
         except
           on E: Exception do

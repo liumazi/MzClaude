@@ -1,6 +1,7 @@
 import { loadGatewayConfig } from "./config/config.js";
 import { createLogger } from "./logging/logger.js";
 import { createGatewayServer } from "./server/server.js";
+import { SessionStore } from "./sessions/sessionStore.js";
 
 async function main(): Promise<void> {
   const config = loadGatewayConfig();
@@ -9,7 +10,8 @@ async function main(): Promise<void> {
     secrets: [config.authToken],
     write: (line) => process.stderr.write(`${line}\n`)
   });
-  const gateway = createGatewayServer({ config, logger });
+  const sessionStore = new SessionStore(config.dataDir);
+  const gateway = createGatewayServer({ config, logger, sessionStore });
 
   await gateway.start();
   process.stdout.write(`${JSON.stringify({

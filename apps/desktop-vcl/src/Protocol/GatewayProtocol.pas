@@ -27,6 +27,7 @@ type
   TGatewayCreateSessionRequest = record
     WorkspacePath: string;
     PermissionPreset: string;
+    ResumeSessionId: string;
     function ToJson: string;
   end;
 
@@ -52,6 +53,20 @@ type
     RunId: string;
     Status: string;
     class function FromJson(const JsonText: string): TGatewaySendMessageResponse; static;
+  end;
+
+  TGatewayStopSessionResponse = record
+    ProtocolVersion: Integer;
+    SessionId: string;
+    RunId: string;
+    Status: string;
+    class function FromJson(const JsonText: string): TGatewayStopSessionResponse; static;
+  end;
+
+  TGatewaySessionListResponse = record
+    ProtocolVersion: Integer;
+    Sessions: TArray<TGatewaySessionResponse>;
+    class function FromJson(const JsonText: string): TGatewaySessionListResponse; static;
   end;
 
   TGatewayQuestionOption = record
@@ -322,6 +337,8 @@ begin
     Root.AddPair('workspacePath', WorkspacePath);
     if PermissionPreset <> '' then
       Root.AddPair('permissionPreset', PermissionPreset);
+    if ResumeSessionId <> '' then
+      Root.AddPair('resumeSessionId', ResumeSessionId);
     Result := Root.ToJSON;
   finally
     Root.Free;
@@ -361,6 +378,62 @@ begin
     Result := Root.ToJSON;
   finally
     Root.Free;
+  end;
+end;
+
+class function TGatewayStopSessionResponse.FromJson(const JsonText: string): TGatewayStopSessionResponse;
+var
+  RootValue: TJSONValue;
+  Root: TJSONObject;
+begin
+  RootValue := TJSONObject.ParseJSONValue(JsonText);
+  try
+    if not (RootValue is TJSONObject) then
+      raise EInvalidOperation.Create('Stop session response is not a JSON object.');
+
+    Root := TJSONObject(RootValue);
+    Result.ProtocolVersion := ReadRequiredInteger(Root, 'protocolVersion');
+    Result.SessionId := ReadRequiredString(Root, 'sessionId');
+    Result.RunId := ReadOptionalString(Root, 'runId');
+    Result.Status := ReadRequiredString(Root, 'status');
+  finally
+    RootValue.Free;
+  end;
+end;
+
+class function TGatewaySessionListResponse.FromJson(const JsonText: string): TGatewaySessionListResponse;
+var
+  RootValue: TJSONValue;
+  Root: TJSONObject;
+  SessionsValue: TJSONValue;
+  SessionsArray: TJSONArray;
+  I: Integer;
+  SessionObject: TJSONObject;
+begin
+  SetLength(Result.Sessions, 0);
+  RootValue := TJSONObject.ParseJSONValue(JsonText);
+  try
+    if not (RootValue is TJSONObject) then
+      raise EInvalidOperation.Create('Session list response is not a JSON object.');
+
+    Root := TJSONObject(RootValue);
+    Result.ProtocolVersion := ReadRequiredInteger(Root, 'protocolVersion');
+    SessionsValue := Root.GetValue('sessions');
+    if not (SessionsValue is TJSONArray) then
+      Exit;
+
+    SessionsArray := TJSONArray(SessionsValue);
+    SetLength(Result.Sessions, SessionsArray.Count);
+    for I := 0 to SessionsArray.Count - 1 do
+    begin
+      if SessionsArray.Items[I] is TJSONObject then
+      begin
+        SessionObject := TJSONObject(SessionsArray.Items[I]);
+        Result.Sessions[I] := TGatewaySessionResponse.FromJson(SessionObject.ToJSON);
+      end;
+    end;
+  finally
+    RootValue.Free;
   end;
 end;
 

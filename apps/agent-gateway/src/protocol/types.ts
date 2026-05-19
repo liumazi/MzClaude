@@ -42,6 +42,18 @@ export type SessionResponse = {
   updatedAt: string;
 };
 
+export type SessionListResponse = {
+  protocolVersion: typeof PROTOCOL_VERSION;
+  sessions: SessionResponse[];
+};
+
+export type StopSessionResponse = {
+  protocolVersion: typeof PROTOCOL_VERSION;
+  sessionId: string;
+  runId?: string;
+  status: "stopped";
+};
+
 export type SendMessageRequest = {
   prompt: string;
 };

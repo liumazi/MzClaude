@@ -2,8 +2,8 @@ object MzClaudeMainForm: TMzClaudeMainForm
   Left = 0
   Top = 0
   Caption = 'MzClaude'
-  ClientHeight = 520
-  ClientWidth = 640
+  ClientHeight = 640
+  ClientWidth = 760
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -17,7 +17,7 @@ object MzClaudeMainForm: TMzClaudeMainForm
   object HeaderPanel: TPanel
     Left = 0
     Top = 0
-    Width = 640
+    Width = 760
     Height = 224
     Align = alTop
     BevelOuter = bvNone
@@ -75,7 +75,7 @@ object MzClaudeMainForm: TMzClaudeMainForm
       Caption = 'Workspace:'
     end
     object RefreshButton: TButton
-      Left = 496
+      Left = 616
       Top = 52
       Width = 112
       Height = 32
@@ -118,24 +118,99 @@ object MzClaudeMainForm: TMzClaudeMainForm
       TabOrder = 4
       OnClick = SendButtonClick
     end
+    object StopButton: TButton
+      Left = 616
+      Top = 152
+      Width = 112
+      Height = 32
+      Caption = 'Stop'
+      TabOrder = 5
+      OnClick = StopButtonClick
+    end
+  end
+  object SessionsPanel: TPanel
+    Left = 0
+    Top = 224
+    Width = 760
+    Height = 160
+    Align = alTop
+    BevelOuter = bvNone
+    Padding.Left = 16
+    Padding.Top = 8
+    Padding.Right = 16
+    Padding.Bottom = 8
+    TabOrder = 1
+    object SessionsLabel: TLabel
+      Left = 16
+      Top = 8
+      Width = 86
+      Height = 15
+      Caption = 'Recent sessions'
+    end
+    object SessionsListView: TListView
+      Left = 16
+      Top = 32
+      Width = 608
+      Height = 112
+      Columns = <
+        item
+          Caption = 'Workspace'
+          Width = 220
+        end
+        item
+          Caption = 'Status'
+          Width = 80
+        end
+        item
+          Caption = 'Updated'
+          Width = 140
+        end
+        item
+          Caption = 'SDK Session'
+          Width = 140
+        end>
+      ReadOnly = True
+      RowSelect = True
+      TabOrder = 0
+      ViewStyle = vsReport
+      OnSelectItem = SessionsListViewSelectItem
+    end
+    object RestoreButton: TButton
+      Left = 632
+      Top = 32
+      Width = 96
+      Height = 32
+      Caption = 'Restore'
+      TabOrder = 1
+      OnClick = RestoreButtonClick
+    end
+    object RefreshSessionsButton: TButton
+      Left = 632
+      Top = 72
+      Width = 96
+      Height = 32
+      Caption = 'Refresh'
+      TabOrder = 2
+      OnClick = RefreshSessionsButtonClick
+    end
   end
   object DetailsMemo: TMemo
     Left = 0
-    Top = 224
-    Width = 640
-    Height = 273
+    Top = 384
+    Width = 760
+    Height = 233
     Align = alClient
     BorderStyle = bsNone
     Color = clBtnFace
     Lines.Strings = (
       'Gateway status details will appear here.')
     ReadOnly = True
-    TabOrder = 1
+    TabOrder = 2
   end
   object StatusBar: TStatusBar
     Left = 0
-    Top = 497
-    Width = 640
+    Top = 617
+    Width = 760
     Height = 23
     Panels = <
       item
@@ -144,7 +219,7 @@ object MzClaudeMainForm: TMzClaudeMainForm
       end
       item
         Text = 'No gateway port configured'
-        Width = 420
+        Width = 520
       end>
   end
 end

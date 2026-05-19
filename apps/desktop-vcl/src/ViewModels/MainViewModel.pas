@@ -33,9 +33,12 @@ type
     FDetailsText: string;
     FHealth: TGatewayHealthResponse;
     FSession: TGatewaySessionResponse;
+    FRecentSessions: TArray<TGatewaySessionResponse>;
+    FSelectedSessionIndex: Integer;
     FWorkspacePath: string;
     FTranscriptText: string;
     FRunning: Boolean;
+    FResumeSdkSessionId: string;
     FOnChatChanged: TChatChangedEvent;
     procedure SetStatus(AStatus: TGatewayConnectionStatus; const AStatusText, ADetailsText: string);
     procedure NotifyChatChanged;
@@ -47,8 +50,10 @@ type
       const RequestId: string;
       const Request: TGatewaySubmitApprovalRequest;
       const FailureTitle: string);
-    procedure ClearSession;
+    procedure DisconnectEvents;
+    procedure ClearActiveSession;
     function EnsureSessionConnected(const WorkspacePath: string): Boolean;
+    function ConnectEventsForSession(const SessionId: string): Boolean;
   public
     constructor Create(
       ASettingsService: TAppSettingsService;
@@ -58,9 +63,15 @@ type
 
     procedure LoadSettings;
     procedure CheckGatewayHealth;
+    procedure LoadRecentSessions;
+    procedure SelectSession(Index: Integer);
+    function RestoreSelectedSession: Boolean;
+    function StopRunningTask: Boolean;
     function SendPrompt(const WorkspacePath, Prompt: string): Boolean;
     function GatewayAddressText: string;
     function CanSendPrompt: Boolean;
+    function CanStop: Boolean;
+    function CanRestore: Boolean;
 
     property Settings: TGatewaySettings read FSettings;
     property Status: TGatewayConnectionStatus read FStatus;
@@ -68,6 +79,8 @@ type
     property DetailsText: string read FDetailsText;
     property Health: TGatewayHealthResponse read FHealth;
     property Session: TGatewaySessionResponse read FSession;
+    property RecentSessions: TArray<TGatewaySessionResponse> read FRecentSessions;
+    property SelectedSessionIndex: Integer read FSelectedSessionIndex;
     property WorkspacePath: string read FWorkspacePath;
     property TranscriptText: string read FTranscriptText;
     property Running: Boolean read FRunning;
@@ -94,6 +107,9 @@ begin
   FProcessService := AProcessService;
   FTranscriptText := '';
   FRunning := False;
+  FSelectedSessionIndex := -1;
+  FResumeSdkSessionId := '';
+  SetLength(FRecentSessions, 0);
   SetStatus(gcsNotConfigured, 'Not configured', 'Gateway settings have not been loaded.');
 end;
 
@@ -131,13 +147,15 @@ begin
     ghSuccess:
       begin
         FHealth := HealthResult.Health;
-        ClearSession;
+        DisconnectEvents;
+        ClearActiveSession;
         SetStatus(
           gcsConnected,
           'Gateway connected',
           Format(
             'Gateway %s is healthy on %s:%d.',
             [FHealth.Version, FHealth.Config.Host, FHealth.Config.Port]));
+        LoadRecentSessions;
       end;
     ghUnauthorized:
       begin
@@ -160,6 +178,87 @@ begin
         SetStatus(gcsError, 'Gateway health check failed', HealthResult.ErrorMessage);
       end;
   end;
+  NotifyChatChanged;
+end;
+
+procedure TMainViewModel.LoadRecentSessions;
+var
+  ListResult: TGatewayListSessionsResult;
+begin
+  SetLength(FRecentSessions, 0);
+  FSelectedSessionIndex := -1;
+
+  if FStatus <> gcsConnected then
+  begin
+    NotifyChatChanged;
+    Exit;
+  end;
+
+  ListResult := FHttpClient.ListSessions(FSettings);
+  if ListResult.Status = gcSuccess then
+    FRecentSessions := ListResult.Sessions.Sessions
+  else
+    SetStatus(gcsError, 'Session list failed', ListResult.ErrorMessage);
+
+  NotifyChatChanged;
+end;
+
+procedure TMainViewModel.SelectSession(Index: Integer);
+begin
+  if (Index < 0) or (Index >= Length(FRecentSessions)) then
+  begin
+    FSelectedSessionIndex := -1;
+    NotifyChatChanged;
+    Exit;
+  end;
+
+  FSelectedSessionIndex := Index;
+  FWorkspacePath := FRecentSessions[Index].WorkspacePath;
+  NotifyChatChanged;
+end;
+
+function TMainViewModel.RestoreSelectedSession: Boolean;
+var
+  Selected: TGatewaySessionResponse;
+begin
+  Result := False;
+
+  if not CanRestore then
+    Exit;
+
+  Selected := FRecentSessions[FSelectedSessionIndex];
+  DisconnectEvents;
+  FSession := Selected;
+  FWorkspacePath := Selected.WorkspacePath;
+  FResumeSdkSessionId := Selected.SdkSessionId;
+  FTranscriptText := Format(
+    'Restored session %s' + sLineBreak
+    + 'Workspace: %s' + sLineBreak
+    + 'SDK session: %s' + sLineBreak + sLineBreak,
+    [Selected.Id, Selected.WorkspacePath, Selected.SdkSessionId]);
+  SetStatus(gcsConnected, 'Session restored', 'Ready to continue this conversation.');
+  Result := ConnectEventsForSession(FSession.Id);
+  NotifyChatChanged;
+end;
+
+function TMainViewModel.StopRunningTask: Boolean;
+var
+  StopResult: TGatewayStopSessionResult;
+begin
+  Result := False;
+
+  if not CanStop then
+    Exit;
+
+  StopResult := FHttpClient.StopSession(FSettings, FSession.Id);
+  if StopResult.Status <> gcSuccess then
+  begin
+    SetStatus(gcsError, 'Stop failed', StopResult.ErrorMessage);
+    NotifyChatChanged;
+    Exit;
+  end;
+
+  Result := True;
 end;
 
 function TMainViewModel.SendPrompt(const WorkspacePath, Prompt: string): Boolean;
@@ -215,7 +314,8 @@ begin
   MessageResult := FHttpClient.SendMessage(FSettings, FSession.Id, MessageRequest);
   if (MessageResult.Status <> gcSuccess) and (MessageResult.StatusCode = 404) then
   begin
-    ClearSession;
+    DisconnectEvents;
+    ClearActiveSession;
     if EnsureSessionConnected(FWorkspacePath) then
       MessageResult := FHttpClient.SendMessage(FSettings, FSession.Id, MessageRequest);
   end;
@@ -231,13 +331,31 @@ begin
   Result := True;
 end;
 
-procedure TMainViewModel.ClearSession;
+procedure TMainViewModel.DisconnectEvents;
+begin
+  FEventsClient.Disconnect;
+end;
+
+procedure TMainViewModel.ClearActiveSession;
 begin
   FSession.Id := '';
   FSession.SdkSessionId := '';
   FSession.WorkspacePath := '';
   FSession.Status := '';
-  FEventsClient.Disconnect;
+  FResumeSdkSessionId := '';
+end;
+
+function TMainViewModel.ConnectEventsForSession(const SessionId: string): Boolean;
+begin
+  Result := False;
+  if SessionId = '' then
+    Exit;
+
+  FEventsClient.Connect(FSettings, SessionId, HandleGatewayEvent, HandleGatewayError);
+  if FEventsClient.WaitForConnected(2000) then
+    Exit(True);
+
+  SetStatus(gcsDisconnected, 'Gateway event stream unavailable', 'Could not connect the WebSocket event stream.');
 end;
 
 function TMainViewModel.EnsureSessionConnected(const WorkspacePath: string): Boolean;
@@ -252,16 +370,14 @@ begin
     if FEventsClient.Connected then
       Exit(True);
 
-    FEventsClient.Connect(FSettings, FSession.Id, HandleGatewayEvent, HandleGatewayError);
-    if FEventsClient.WaitForConnected(2000) then
-      Exit(True);
-
-    SetStatus(gcsDisconnected, 'Gateway event stream unavailable', 'Could not connect the WebSocket event stream.');
+    Result := ConnectEventsForSession(FSession.Id);
     Exit;
   end;
 
   CreateRequest.WorkspacePath := WorkspacePath;
   CreateRequest.PermissionPreset := 'default';
+  if FResumeSdkSessionId <> '' then
+    CreateRequest.ResumeSessionId := FResumeSdkSessionId;
   CreateResult := FHttpClient.CreateSession(FSettings, CreateRequest);
   if CreateResult.Status <> gcSuccess then
   begin
@@ -270,14 +386,10 @@ begin
   end;
 
   FSession := CreateResult.Session;
-  FEventsClient.Connect(FSettings, FSession.Id, HandleGatewayEvent, HandleGatewayError);
-  if not FEventsClient.WaitForConnected(2000) then
-  begin
-    SetStatus(gcsDisconnected, 'Gateway event stream unavailable', 'Could not connect the WebSocket event stream.');
-    Exit;
-  end;
-
-  Result := True;
+  FResumeSdkSessionId := '';
+  Result := ConnectEventsForSession(FSession.Id);
+  if Result then
+    LoadRecentSessions;
 end;
 
 function TMainViewModel.GatewayAddressText: string;
@@ -291,6 +403,19 @@ end;
 function TMainViewModel.CanSendPrompt: Boolean;
 begin
   Result := FSettings.IsConfigured and not FRunning;
+end;
+
+function TMainViewModel.CanStop: Boolean;
+begin
+  Result := FRunning and (FSession.Id <> '');
+end;
+
+function TMainViewModel.CanRestore: Boolean;
+begin
+  Result := (not FRunning)
+    and (FSelectedSessionIndex >= 0)
+    and (FSelectedSessionIndex < Length(FRecentSessions))
+    and (FStatus = gcsConnected);
 end;
 
 procedure TMainViewModel.HandleGatewayEvent(const Event: TGatewayEvent);
@@ -311,6 +436,21 @@ begin
       FTranscriptText := FTranscriptText + Event.Text;
     FTranscriptText := FTranscriptText + sLineBreak + sLineBreak;
     SetStatus(gcsConnected, 'Chat complete', 'Ready for the next prompt.');
+    LoadRecentSessions;
+    NotifyChatChanged;
+    Exit;
+  end;
+
+  if Event.EventType = 'run_stopped' then
+  begin
+    FRunning := False;
+    if Event.ErrorMessage <> '' then
+      FTranscriptText := FTranscriptText + sLineBreak + Event.ErrorMessage + sLineBreak
+    else
+      FTranscriptText := FTranscriptText + sLineBreak + '[Task stopped]' + sLineBreak;
+    FTranscriptText := FTranscriptText + sLineBreak;
+    SetStatus(gcsConnected, 'Chat stopped', 'Task was cancelled. Ready for the next prompt.');
+    LoadRecentSessions;
     NotifyChatChanged;
     Exit;
   end;
@@ -336,6 +476,7 @@ begin
       + sLineBreak
       + sLineBreak;
     SetStatus(gcsError, 'Chat failed', Event.ErrorMessage);
+    LoadRecentSessions;
     NotifyChatChanged;
   end;
 end;

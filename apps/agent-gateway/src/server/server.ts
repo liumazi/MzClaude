@@ -30,6 +30,7 @@ export type GatewayServerOptions = {
   config: GatewayConfig;
   logger: Logger;
   agentRunner?: AgentRunner;
+  sessionStore?: SessionStore;
 };
 
 export type GatewayServer = {
@@ -38,11 +39,17 @@ export type GatewayServer = {
   port: number;
 };
 
+type ActiveRun = {
+  runId: string;
+  abortController: AbortController;
+};
+
 export function createGatewayServer(options: GatewayServerOptions): GatewayServer {
   const { config, logger } = options;
   const agentRunner = options.agentRunner ?? createSdkAgentRunner();
-  const sessionStore = new SessionStore();
+  const sessionStore = options.sessionStore ?? new SessionStore(config.dataDir);
   const subscribers = new Map<string, Set<WebSocket>>();
+  const activeRuns = new Map<string, ActiveRun>();
   const approvalStore = new ApprovalStore((event) => broadcast(subscribers, event));
   const webSocketServer = new WebSocketServer({ noServer: true });
 
@@ -62,6 +69,11 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/api/sessions") {
+        handleListSessions(response, sessionStore);
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/sessions") {
         await handleCreateSession(request, response, sessionStore);
         return;
@@ -70,6 +82,12 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       const messageRoute = matchSessionMessageRoute(url.pathname);
       if (request.method === "POST" && messageRoute) {
         await handleSendMessage(request, response, sessionStore, agentRunner, messageRoute.sessionId);
+        return;
+      }
+
+      const stopRoute = matchSessionStopRoute(url.pathname);
+      if (request.method === "POST" && stopRoute) {
+        handleStopSession(response, sessionStore, subscribers, activeRuns, stopRoute.sessionId);
         return;
       }
 
@@ -132,13 +150,16 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   });
 
   const gateway: GatewayServer = {
-    start: () => new Promise((resolve, reject) => {
-      httpServer.once("error", reject);
-      httpServer.listen(config.port, config.host, () => {
-        httpServer.off("error", reject);
-        resolve();
+    start: async () => {
+      await sessionStore.init();
+      await new Promise<void>((resolve, reject) => {
+        httpServer.once("error", reject);
+        httpServer.listen(config.port, config.host, () => {
+          httpServer.off("error", reject);
+          resolve();
+        });
       });
-    }),
+    },
     stop: () => new Promise((resolve, reject) => {
       webSocketServer.clients.forEach((client) => client.close());
       webSocketServer.close((webSocketError) => {
@@ -165,6 +186,16 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
 
   return gateway;
 
+  function handleListSessions(
+    response: http.ServerResponse,
+    store: SessionStore
+  ): void {
+    writeJson(response, 200, {
+      protocolVersion: PROTOCOL_VERSION,
+      sessions: store.list().map(toSessionResponse)
+    });
+  }
+
   async function handleCreateSession(
     request: http.IncomingMessage,
     response: http.ServerResponse,
@@ -182,6 +213,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     }
 
     const session = store.create(body);
+    await store.flush();
     logger.info("session_created", { sessionId: session.id, workspacePath: session.workspacePath });
     writeJson(response, 201, toSessionResponse(session));
   }
@@ -217,12 +249,50 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       return;
     }
 
-    void runAgent(runner, store, runningSession, runId, body.prompt);
+    const abortController = new AbortController();
+    activeRuns.set(session.id, { runId, abortController });
+    void runAgent(runner, store, runningSession, runId, body.prompt, abortController, activeRuns);
     writeJson(response, 202, {
       protocolVersion: PROTOCOL_VERSION,
       sessionId: session.id,
       runId,
       status: "running"
+    });
+  }
+
+  function handleStopSession(
+    response: http.ServerResponse,
+    store: SessionStore,
+    eventSubscribers: Map<string, Set<WebSocket>>,
+    runs: Map<string, ActiveRun>,
+    sessionId: string
+  ): void {
+    const session = store.get(sessionId);
+    if (!session) {
+      writeError(response, 404, "session_not_found", "Session not found.");
+      return;
+    }
+
+    const activeRun = runs.get(sessionId);
+    if (!activeRun) {
+      writeError(response, 409, "session_not_running", "Session does not have a running task.");
+      return;
+    }
+
+    activeRun.abortController.abort();
+    runs.delete(sessionId);
+    store.stopRun(sessionId);
+    void store.flush();
+    broadcast(eventSubscribers, createEvent(sessionId, activeRun.runId, "run_stopped", {
+      reason: "user_cancelled",
+      message: "Task stopped by user."
+    }));
+    logger.info("session_stopped", { sessionId, runId: activeRun.runId });
+    writeJson(response, 200, {
+      protocolVersion: PROTOCOL_VERSION,
+      sessionId,
+      runId: activeRun.runId,
+      status: "stopped"
     });
   }
 
@@ -265,10 +335,13 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     store: SessionStore,
     session: GatewaySession,
     runId: string,
-    prompt: string
+    prompt: string,
+    abortController: AbortController,
+    runs: Map<string, ActiveRun>
   ): Promise<void> {
-    let terminalStatus: "idle" | "failed" = "idle";
+    let terminalStatus: "idle" | "failed" | "stopped" = "idle";
     let sdkSessionId: string | undefined;
+    let stoppedByUser = false;
 
     try {
       for await (const event of runner.run({
@@ -276,8 +349,14 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         sessionId: session.id,
         runId,
         prompt,
+        abortController,
         approvals: approvalStore.createBridge(session.id, runId)
       })) {
+        if (abortController.signal.aborted) {
+          stoppedByUser = true;
+          break;
+        }
+
         broadcast(subscribers, event);
         if (event.type === "result") {
           sdkSessionId = typeof event.payload.sdkSessionId === "string"
@@ -286,18 +365,31 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
           terminalStatus = "idle";
         }
         if (event.type === "error") {
+          sdkSessionId = typeof event.payload.sdkSessionId === "string"
+            ? event.payload.sdkSessionId
+            : sdkSessionId;
           terminalStatus = "failed";
         }
       }
     } catch (error: unknown) {
-      terminalStatus = "failed";
-      broadcast(subscribers, createEvent(session.id, runId, "error", {
-        code: "agent_error",
-        message: error instanceof Error ? error.message : String(error),
-        details: {}
-      }));
+      if (abortController.signal.aborted) {
+        stoppedByUser = true;
+      } else {
+        terminalStatus = "failed";
+        broadcast(subscribers, createEvent(session.id, runId, "error", {
+          code: "agent_error",
+          message: error instanceof Error ? error.message : String(error),
+          details: {}
+        }));
+      }
     } finally {
-      store.finishRun(session.id, terminalStatus, sdkSessionId);
+      runs.delete(session.id);
+      if (stoppedByUser || abortController.signal.aborted) {
+        store.stopRun(session.id);
+      } else {
+        store.finishRun(session.id, terminalStatus, sdkSessionId);
+      }
+      await store.flush();
     }
   }
 }
@@ -372,6 +464,11 @@ async function isDirectory(path: string): Promise<boolean> {
 
 function matchSessionMessageRoute(pathname: string): { sessionId: string } | undefined {
   const match = /^\/api\/sessions\/([^/]+)\/messages$/.exec(pathname);
+  return match ? { sessionId: decodeURIComponent(match[1]) } : undefined;
+}
+
+function matchSessionStopRoute(pathname: string): { sessionId: string } | undefined {
+  const match = /^\/api\/sessions\/([^/]+)\/stop$/.exec(pathname);
   return match ? { sessionId: decodeURIComponent(match[1]) } : undefined;
 }
 
@@ -456,6 +553,8 @@ function statusText(statusCode: number): string {
       return "Unauthorized";
     case 404:
       return "Not Found";
+    case 409:
+      return "Conflict";
     default:
       return "Error";
   }
