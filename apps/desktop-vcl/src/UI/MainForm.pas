@@ -141,7 +141,7 @@ procedure TMzClaudeMainForm.SessionsListViewSelectItem(
 begin
   if Selected and (Item <> nil) then
     FViewModel.SelectSession(Item.Index);
-  RefreshView;
+  //RefreshView;
 end;
 
 procedure TMzClaudeMainForm.CheckGateway;

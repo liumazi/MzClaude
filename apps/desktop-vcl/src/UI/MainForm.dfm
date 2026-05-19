@@ -143,7 +143,7 @@ object MzClaudeMainForm: TMzClaudeMainForm
     object SessionsLabel: TLabel
       Left = 16
       Top = 8
-      Width = 86
+      Width = 82
       Height = 15
       Caption = 'Recent sessions'
     end

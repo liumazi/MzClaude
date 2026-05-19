@@ -212,9 +212,12 @@ begin
     Exit;
   end;
 
-  FSelectedSessionIndex := Index;
-  FWorkspacePath := FRecentSessions[Index].WorkspacePath;
-  NotifyChatChanged;
+  if FSelectedSessionIndex <> Index then
+  begin
+    FSelectedSessionIndex := Index;
+    FWorkspacePath := FRecentSessions[Index].WorkspacePath;
+    NotifyChatChanged;
+  end;
 end;
 
 function TMainViewModel.RestoreSelectedSession: Boolean;
