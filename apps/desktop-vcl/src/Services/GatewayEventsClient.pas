@@ -35,6 +35,18 @@ implementation
 const
   RECEIVE_BUFFER_BYTES = 8192;
 
+procedure AppendReceiveBytes(var MessageBuffer: TBytes; const Buffer: TBytes; Count: Integer);
+var
+  OldLen: Integer;
+begin
+  if Count <= 0 then
+    Exit;
+
+  OldLen := Length(MessageBuffer);
+  SetLength(MessageBuffer, OldLen + Count);
+  Move(Buffer[0], MessageBuffer[OldLen], Count);
+end;
+
 destructor TGatewayEventsClient.Destroy;
 begin
   Disconnect;
@@ -65,10 +77,28 @@ begin
       RequestHandle: HINTERNET;
       RequestPath: string;
       Buffer: TBytes;
+      MessageBuffer: TBytes;
       BytesRead: DWORD;
       BufferType: WINHTTP_WEB_SOCKET_BUFFER_TYPE;
+      ReceiveResult: DWORD;
       Text: string;
       Event: TGatewayEvent;
+
+      procedure DispatchCompleteMessage;
+      begin
+        if Length(MessageBuffer) = 0 then
+          Exit;
+
+        Text := TEncoding.UTF8.GetString(MessageBuffer);
+        SetLength(MessageBuffer, 0);
+        try
+          Event := TGatewayEvent.FromJson(Text);
+          QueueEvent(OnEvent, Event);
+        except
+          on E: Exception do
+            QueueError(OnError, E.Message);
+        end;
+      end;
     begin
       SessionHandle := nil;
       ConnectHandle := nil;
@@ -129,31 +159,32 @@ begin
 
         FConnected := True;
         SetLength(Buffer, RECEIVE_BUFFER_BYTES);
+        SetLength(MessageBuffer, 0);
         while not TThread.CurrentThread.CheckTerminated do
         begin
           BytesRead := 0;
           BufferType := WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE;
-          if WinHttpWebSocketReceive(
+          ReceiveResult := WinHttpWebSocketReceive(
             FSocket,
             @Buffer[0],
             Length(Buffer),
             BytesRead,
-            BufferType) <> NO_ERROR then
-            raise EInvalidOperation.Create('Gateway WebSocket receive failed.');
+            BufferType);
+          if ReceiveResult <> NO_ERROR then
+            raise EInvalidOperation.CreateFmt(
+              'Gateway WebSocket receive failed (error %d).',
+              [ReceiveResult]);
 
           if BufferType = WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE then
             Break;
 
-          if (BufferType = WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) and (BytesRead > 0) then
+          if BufferType in [
+            WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE,
+            WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE] then
           begin
-            Text := TEncoding.UTF8.GetString(Buffer, 0, BytesRead);
-            try
-              Event := TGatewayEvent.FromJson(Text);
-              QueueEvent(OnEvent, Event);
-            except
-              on E: Exception do
-                QueueError(OnError, E.Message);
-            end;
+            AppendReceiveBytes(MessageBuffer, Buffer, BytesRead);
+            if BufferType = WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE then
+              DispatchCompleteMessage;
           end;
         end;
       except

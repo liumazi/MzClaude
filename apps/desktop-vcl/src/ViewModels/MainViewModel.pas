@@ -47,6 +47,8 @@ type
       const RequestId: string;
       const Request: TGatewaySubmitApprovalRequest;
       const FailureTitle: string);
+    procedure ClearSession;
+    function EnsureSessionConnected(const WorkspacePath: string): Boolean;
   public
     constructor Create(
       ASettingsService: TAppSettingsService;
@@ -129,6 +131,7 @@ begin
     ghSuccess:
       begin
         FHealth := HealthResult.Health;
+        ClearSession;
         SetStatus(
           gcsConnected,
           'Gateway connected',
@@ -161,14 +164,10 @@ end;
 
 function TMainViewModel.SendPrompt(const WorkspacePath, Prompt: string): Boolean;
 var
-  CreateRequest: TGatewayCreateSessionRequest;
-  CreateResult: TGatewayCreateSessionResult;
   MessageRequest: TGatewaySendMessageRequest;
   MessageResult: TGatewaySendMessageResult;
-  SessionCreated: Boolean;
 begin
   Result := False;
-  SessionCreated := False;
 
   if not FSettings.IsConfigured then
   begin
@@ -199,38 +198,10 @@ begin
     Exit;
   end;
 
-  if (FSession.Id = '') or not SameText(FSession.WorkspacePath, FWorkspacePath) then
+  if not EnsureSessionConnected(FWorkspacePath) then
   begin
-    CreateRequest.WorkspacePath := FWorkspacePath;
-    CreateRequest.PermissionPreset := 'default';
-    CreateResult := FHttpClient.CreateSession(FSettings, CreateRequest);
-    if CreateResult.Status <> gcSuccess then
-    begin
-      SetStatus(gcsError, 'Session creation failed', CreateResult.ErrorMessage);
-      NotifyChatChanged;
-      Exit;
-    end;
-
-    FSession := CreateResult.Session;
-    FEventsClient.Connect(FSettings, FSession.Id, HandleGatewayEvent, HandleGatewayError);
-    if not FEventsClient.WaitForConnected(2000) then
-    begin
-      SetStatus(gcsDisconnected, 'Gateway event stream unavailable', 'Could not connect the WebSocket event stream.');
-      NotifyChatChanged;
-      Exit;
-    end;
-    SessionCreated := True;
-  end;
-
-  if (not SessionCreated) and (not FEventsClient.Connected) then
-  begin
-    FEventsClient.Connect(FSettings, FSession.Id, HandleGatewayEvent, HandleGatewayError);
-    if not FEventsClient.WaitForConnected(2000) then
-    begin
-      SetStatus(gcsDisconnected, 'Gateway event stream unavailable', 'Could not connect the WebSocket event stream.');
-      NotifyChatChanged;
-      Exit;
-    end;
+    NotifyChatChanged;
+    Exit;
   end;
 
   FTranscriptText := FTranscriptText
@@ -242,11 +213,67 @@ begin
 
   MessageRequest.Prompt := Prompt;
   MessageResult := FHttpClient.SendMessage(FSettings, FSession.Id, MessageRequest);
+  if (MessageResult.Status <> gcSuccess) and (MessageResult.StatusCode = 404) then
+  begin
+    ClearSession;
+    if EnsureSessionConnected(FWorkspacePath) then
+      MessageResult := FHttpClient.SendMessage(FSettings, FSession.Id, MessageRequest);
+  end;
+
   if MessageResult.Status <> gcSuccess then
   begin
     FRunning := False;
     SetStatus(gcsError, 'Prompt send failed', MessageResult.ErrorMessage);
     NotifyChatChanged;
+    Exit;
+  end;
+
+  Result := True;
+end;
+
+procedure TMainViewModel.ClearSession;
+begin
+  FSession.Id := '';
+  FSession.SdkSessionId := '';
+  FSession.WorkspacePath := '';
+  FSession.Status := '';
+  FEventsClient.Disconnect;
+end;
+
+function TMainViewModel.EnsureSessionConnected(const WorkspacePath: string): Boolean;
+var
+  CreateRequest: TGatewayCreateSessionRequest;
+  CreateResult: TGatewayCreateSessionResult;
+begin
+  Result := False;
+
+  if (FSession.Id <> '') and SameText(FSession.WorkspacePath, WorkspacePath) then
+  begin
+    if FEventsClient.Connected then
+      Exit(True);
+
+    FEventsClient.Connect(FSettings, FSession.Id, HandleGatewayEvent, HandleGatewayError);
+    if FEventsClient.WaitForConnected(2000) then
+      Exit(True);
+
+    SetStatus(gcsDisconnected, 'Gateway event stream unavailable', 'Could not connect the WebSocket event stream.');
+    Exit;
+  end;
+
+  CreateRequest.WorkspacePath := WorkspacePath;
+  CreateRequest.PermissionPreset := 'default';
+  CreateResult := FHttpClient.CreateSession(FSettings, CreateRequest);
+  if CreateResult.Status <> gcSuccess then
+  begin
+    SetStatus(gcsError, 'Session creation failed', CreateResult.ErrorMessage);
+    Exit;
+  end;
+
+  FSession := CreateResult.Session;
+  FEventsClient.Connect(FSettings, FSession.Id, HandleGatewayEvent, HandleGatewayError);
+  if not FEventsClient.WaitForConnected(2000) then
+  begin
+    SetStatus(gcsDisconnected, 'Gateway event stream unavailable', 'Could not connect the WebSocket event stream.');
     Exit;
   end;
 
@@ -280,6 +307,8 @@ begin
     FRunning := False;
     if Event.SdkSessionId <> '' then
       FSession.SdkSessionId := Event.SdkSessionId;
+    if Event.Text <> '' then
+      FTranscriptText := FTranscriptText + Event.Text;
     FTranscriptText := FTranscriptText + sLineBreak + sLineBreak;
     SetStatus(gcsConnected, 'Chat complete', 'Ready for the next prompt.');
     NotifyChatChanged;

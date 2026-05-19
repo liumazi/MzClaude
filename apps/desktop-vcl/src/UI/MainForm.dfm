@@ -29,7 +29,7 @@ object MzClaudeMainForm: TMzClaudeMainForm
     object TitleLabel: TLabel
       Left = 16
       Top = 12
-      Width = 112
+      Width = 88
       Height = 25
       Caption = 'MzClaude'
       Font.Charset = DEFAULT_CHARSET
@@ -42,30 +42,37 @@ object MzClaudeMainForm: TMzClaudeMainForm
     object GatewayLabel: TLabel
       Left = 16
       Top = 56
-      Width = 51
+      Width = 48
       Height = 15
       Caption = 'Gateway:'
     end
     object GatewayValueLabel: TLabel
       Left = 88
       Top = 56
-      Width = 139
+      Width = 149
       Height = 15
       Caption = 'No gateway port configured'
     end
     object StatusLabel: TLabel
       Left = 16
       Top = 84
-      Width = 39
+      Width = 35
       Height = 15
       Caption = 'Status:'
     end
     object StatusValueLabel: TLabel
       Left = 88
       Top = 84
-      Width = 84
+      Width = 81
       Height = 15
       Caption = 'Not configured'
+    end
+    object WorkspaceLabel: TLabel
+      Left = 16
+      Top = 120
+      Width = 61
+      Height = 15
+      Caption = 'Workspace:'
     end
     object RefreshButton: TButton
       Left = 496
@@ -76,19 +83,13 @@ object MzClaudeMainForm: TMzClaudeMainForm
       TabOrder = 0
       OnClick = RefreshButtonClick
     end
-    object WorkspaceLabel: TLabel
-      Left = 16
-      Top = 120
-      Width = 62
-      Height = 15
-      Caption = 'Workspace:'
-    end
     object WorkspaceEdit: TEdit
       Left = 88
       Top = 116
       Width = 408
       Height = 23
       TabOrder = 1
+      Text = 'C:\Users\liuliu.mz\Desktop\MzTest6'
     end
     object BrowseButton: TButton
       Left = 504
