@@ -14,8 +14,10 @@ type
   TGatewayEventsClient = class
   private
     FThread: TThread;
+    FRequestHandle: HINTERNET;
     FSocket: HINTERNET;
     FConnected: Boolean;
+    function WinHttpErrorText(const Operation: string): string;
     procedure QueueError(const Handler: TGatewayEventErrorHandler; const ErrorMessage: string);
     procedure QueueEvent(const Handler: TGatewayEventHandler; const Event: TGatewayEvent);
   public
@@ -34,6 +36,13 @@ implementation
 
 const
   RECEIVE_BUFFER_BYTES = 8192;
+  ERROR_WINHTTP_OPERATION_CANCELLED = 12017;
+
+function IsExpectedDisconnectError(ErrorCode: DWORD): Boolean;
+begin
+  Result := (ErrorCode = ERROR_WINHTTP_OPERATION_CANCELLED)
+    or TThread.CurrentThread.CheckTerminated;
+end;
 
 procedure AppendReceiveBytes(var MessageBuffer: TBytes; const Buffer: TBytes; Count: Integer);
 var
@@ -45,6 +54,17 @@ begin
   OldLen := Length(MessageBuffer);
   SetLength(MessageBuffer, OldLen + Count);
   Move(Buffer[0], MessageBuffer[OldLen], Count);
+end;
+
+function TGatewayEventsClient.WinHttpErrorText(const Operation: string): string;
+var
+  ErrorCode: DWORD;
+begin
+  ErrorCode := GetLastError;
+  if ErrorCode = 0 then
+    Result := Operation
+  else
+    Result := Format('%s (WinHTTP error %d).', [Operation, ErrorCode]);
 end;
 
 destructor TGatewayEventsClient.Destroy;
@@ -103,6 +123,7 @@ begin
       SessionHandle := nil;
       ConnectHandle := nil;
       RequestHandle := nil;
+      FRequestHandle := nil;
       FSocket := nil;
       try
         SessionHandle := WinHttpOpen(
@@ -117,10 +138,9 @@ begin
         ConnectHandle := WinHttpConnect(SessionHandle, PWideChar(Host), Port, 0);
         if ConnectHandle = nil then
           raise EInvalidOperation.Create('Unable to connect to gateway WebSocket endpoint.');
-
         RequestPath := Format(
           '/api/sessions/%s/events?token=%s',
-          [SessionId, TNetEncoding.URL.Encode(Token)]);
+          [TNetEncoding.URL.Encode(SessionId), TNetEncoding.URL.Encode(Token)]);
         RequestHandle := WinHttpOpenRequest(
           ConnectHandle,
           'GET',
@@ -130,15 +150,26 @@ begin
           WINHTTP_DEFAULT_ACCEPT_TYPES,
           0);
         if RequestHandle = nil then
-          raise EInvalidOperation.Create('Unable to open gateway WebSocket request.');
+          raise EInvalidOperation.Create(WinHttpErrorText('Unable to open gateway WebSocket request'));
+
+        if Token <> '' then
+        begin
+          if WinHttpAddRequestHeaders(
+            RequestHandle,
+            PWideChar('Authorization: Bearer ' + Token),
+            Cardinal(-1),
+            WINHTTP_ADDREQ_FLAG_ADD) = False then
+            raise EInvalidOperation.Create(WinHttpErrorText('Unable to add WebSocket authorization header'));
+        end;
 
         if not WinHttpSetOption(
           RequestHandle,
           WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET,
           nil,
           0) then
-          raise EInvalidOperation.Create('Unable to request WebSocket upgrade.');
+          raise EInvalidOperation.Create(WinHttpErrorText('Unable to request WebSocket upgrade'));
 
+        FRequestHandle := RequestHandle;
         if not WinHttpSendRequest(
           RequestHandle,
           WINHTTP_NO_ADDITIONAL_HEADERS,
@@ -147,12 +178,13 @@ begin
           0,
           0,
           0) then
-          raise EInvalidOperation.Create('Unable to send WebSocket upgrade request.');
+          raise EInvalidOperation.Create(WinHttpErrorText('Unable to send WebSocket upgrade request'));
 
         if not WinHttpReceiveResponse(RequestHandle, nil) then
-          raise EInvalidOperation.Create('Gateway did not complete WebSocket upgrade.');
+          raise EInvalidOperation.Create(WinHttpErrorText('Gateway did not complete WebSocket upgrade'));
 
         FSocket := WinHttpWebSocketCompleteUpgrade(RequestHandle, 0);
+        FRequestHandle := nil;
         RequestHandle := nil;
         if FSocket = nil then
           raise EInvalidOperation.Create('Unable to complete WebSocket upgrade.');
@@ -171,9 +203,13 @@ begin
             BytesRead,
             BufferType);
           if ReceiveResult <> NO_ERROR then
+          begin
+            if IsExpectedDisconnectError(ReceiveResult) then
+              Break;
             raise EInvalidOperation.CreateFmt(
               'Gateway WebSocket receive failed (error %d).',
               [ReceiveResult]);
+          end;
 
           if BufferType = WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE then
             Break;
@@ -189,10 +225,12 @@ begin
         end;
       except
         on E: Exception do
-          QueueError(OnError, E.Message);
+          if not TThread.CurrentThread.CheckTerminated then
+            QueueError(OnError, E.Message);
       end;
 
       FConnected := False;
+      FRequestHandle := nil;
       if FSocket <> nil then
       begin
         WinHttpCloseHandle(FSocket);
@@ -210,15 +248,35 @@ begin
 end;
 
 procedure TGatewayEventsClient.Disconnect;
+var
+  Thread: TThread;
+  Socket: HINTERNET;
+  Request: HINTERNET;
 begin
-  if FThread <> nil then
+  Thread := FThread;
+  if Thread = nil then
+    Exit;
+
+  FThread := nil;
+  Thread.Terminate;
+
+  Socket := FSocket;
+  if Socket <> nil then
   begin
-    FThread.Terminate;
-    if FSocket <> nil then
-      WinHttpWebSocketClose(FSocket, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nil, 0);
-    FThread.WaitFor;
-    FreeAndNil(FThread);
+    FSocket := nil;
+    WinHttpWebSocketClose(Socket, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nil, 0);
+    WinHttpCloseHandle(Socket);
   end;
+
+  Request := FRequestHandle;
+  if Request <> nil then
+  begin
+    FRequestHandle := nil;
+    WinHttpCloseHandle(Request);
+  end;
+
+  Thread.WaitFor;
+  Thread.Free;
   FConnected := False;
 end;
 

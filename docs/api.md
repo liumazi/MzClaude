@@ -44,7 +44,26 @@ ws://127.0.0.1:39123/api/sessions/sess_123/events?token=<launch-token>
 
 ### `GET /api/sessions`
 
-列出网关已知会话。数据来源可以包括网关元数据和 Agent SDK 的会话发现能力。
+列出 Claude Agent SDK 在本地磁盘上的历史会话（`listSessions()`），并合并当前网关中正在运行的 `sess_*` 会话。
+
+Query 参数（均可选）：
+
+- `workspacePath`：工作区路径。提供时只返回该目录（及 git worktree）下的 SDK 会话；省略时返回所有项目的 SDK 会话。
+- `limit` / `offset`：分页，转发给 SDK `listSessions()`。
+
+响应中每条会话的 `id` 与 `sdkSessionId` 均为 SDK 会话 UUID，用于 `resume` 与历史读取。正在运行的网关会话仍以 `sess_*` 作为 `id`，`status` 为 `running` 或 `waiting_for_approval`。
+
+### `GET /api/sessions/{sessionId}/history`
+
+读取指定 SDK 会话的历史消息（`getSessionMessages()`）。`sessionId` 为 SDK UUID（与列表中的 `id` 一致）。
+
+Query 参数（均可选）：
+
+- `workspacePath`：工作区路径，应与创建该会话时的工作目录一致，否则可能找不到记录。
+- `limit`：默认 `200`。
+- `offset`：跳过前 N 条消息。
+
+响应 `messages` 为网关归一化后的 `{ role, uuid, sessionId, text }` 数组，供客户端渲染 transcript。
 
 ### `POST /api/sessions/{id}/messages`
 

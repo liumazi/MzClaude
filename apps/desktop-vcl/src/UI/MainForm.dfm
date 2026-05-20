@@ -2,7 +2,7 @@ object MzClaudeMainForm: TMzClaudeMainForm
   Left = 0
   Top = 0
   Caption = 'MzClaude'
-  ClientHeight = 640
+  ClientHeight = 784
   ClientWidth = 760
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
@@ -141,21 +141,25 @@ object MzClaudeMainForm: TMzClaudeMainForm
     Padding.Bottom = 8
     TabOrder = 1
     object SessionsLabel: TLabel
-      Left = 16
-      Top = 8
+      Left = 22
+      Top = -1
       Width = 82
-      Height = 15
+      Height = 27
       Caption = 'Recent sessions'
     end
     object SessionsListView: TListView
-      Left = 16
-      Top = 32
+      Left = 18
+      Top = 16
       Width = 608
-      Height = 112
+      Height = 138
       Columns = <
         item
           Caption = 'Workspace'
-          Width = 220
+          Width = 200
+        end
+        item
+          Caption = 'Title'
+          Width = 160
         end
         item
           Caption = 'Status'
@@ -198,7 +202,7 @@ object MzClaudeMainForm: TMzClaudeMainForm
     Left = 0
     Top = 384
     Width = 760
-    Height = 233
+    Height = 377
     Align = alClient
     BorderStyle = bsNone
     Color = clBtnFace
@@ -206,10 +210,12 @@ object MzClaudeMainForm: TMzClaudeMainForm
       'Gateway status details will appear here.')
     ReadOnly = True
     TabOrder = 2
+    ExplicitTop = 500
+    ExplicitHeight = 545
   end
   object StatusBar: TStatusBar
     Left = 0
-    Top = 617
+    Top = 761
     Width = 760
     Height = 23
     Panels = <
@@ -221,5 +227,6 @@ object MzClaudeMainForm: TMzClaudeMainForm
         Text = 'No gateway port configured'
         Width = 520
       end>
+    ExplicitTop = 617
   end
 end

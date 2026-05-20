@@ -1,6 +1,4 @@
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
 
 import {
   PROTOCOL_VERSION,
@@ -24,22 +22,14 @@ export type GatewaySession = {
 
 type TerminalRunStatus = Extract<SessionStatus, "idle" | "failed" | "stopped">;
 
+const ACTIVE_STATUSES: SessionStatus[] = ["running", "waiting_for_approval"];
+
 export class SessionStore {
   private readonly sessions = new Map<string, GatewaySession>();
-  private readonly dataDir?: string;
   private initialized = false;
 
-  constructor(dataDir?: string) {
-    this.dataDir = dataDir;
-  }
-
   async init(): Promise<void> {
-    if (this.initialized) {
-      return;
-    }
-
     this.initialized = true;
-    await this.loadFromDisk();
   }
 
   create(request: CreateSessionRequest): GatewaySession {
@@ -67,6 +57,10 @@ export class SessionStore {
     return [...this.sessions.values()].sort(
       (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
     );
+  }
+
+  listActive(): GatewaySession[] {
+    return this.list().filter((session) => ACTIVE_STATUSES.includes(session.status));
   }
 
   startRun(id: string, runId: string): GatewaySession | undefined {
@@ -110,59 +104,7 @@ export class SessionStore {
   }
 
   async flush(): Promise<void> {
-    if (!this.dataDir) {
-      return;
-    }
-
-    await Promise.all([...this.sessions.values()].map((session) => this.persist(session)));
-  }
-
-  private async loadFromDisk(): Promise<void> {
-    if (!this.dataDir) {
-      return;
-    }
-
-    const sessionsDir = path.join(this.dataDir, "sessions");
-    let entries: string[];
-    try {
-      entries = await fs.readdir(sessionsDir);
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (!entry.endsWith(".json")) {
-        continue;
-      }
-
-      try {
-        const raw = await fs.readFile(path.join(sessionsDir, entry), "utf8");
-        const session = JSON.parse(raw) as GatewaySession;
-        if (session.status === "running") {
-          session.status = "stopped";
-          session.currentRunId = undefined;
-        }
-        this.sessions.set(session.id, session);
-        await this.persist(session);
-      } catch {
-        // Skip corrupt session files.
-      }
-    }
-  }
-
-  private async persist(session: GatewaySession): Promise<void> {
-    if (!this.dataDir) {
-      return;
-    }
-
-    const sessionsDir = path.join(this.dataDir, "sessions");
-    await fs.mkdir(sessionsDir, { recursive: true });
-    const filePath = path.join(sessionsDir, `${session.id}.json`);
-    const payload: GatewaySession = {
-      ...session,
-      currentRunId: undefined
-    };
-    await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
+    // In-memory only; SDK owns historical session persistence.
   }
 }
 
@@ -175,5 +117,13 @@ export function toSessionResponse(session: GatewaySession): SessionResponse {
     status: session.status,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt
+  };
+}
+
+export function toActiveGatewaySessionResponse(session: GatewaySession): SessionResponse {
+  return {
+    ...toSessionResponse(session),
+    id: session.id,
+    sdkSessionId: session.sdkSessionId ?? session.resumeSessionId
   };
 }

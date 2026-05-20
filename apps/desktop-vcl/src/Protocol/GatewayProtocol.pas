@@ -36,6 +36,7 @@ type
     Id: string;
     SdkSessionId: string;
     WorkspacePath: string;
+    Title: string;
     Status: string;
     CreatedAt: string;
     UpdatedAt: string;
@@ -67,6 +68,21 @@ type
     ProtocolVersion: Integer;
     Sessions: TArray<TGatewaySessionResponse>;
     class function FromJson(const JsonText: string): TGatewaySessionListResponse; static;
+  end;
+
+  TGatewaySessionHistoryMessage = record
+    Role: string;
+    Uuid: string;
+    SessionId: string;
+    Text: string;
+  end;
+
+  TGatewaySessionHistoryResponse = record
+    ProtocolVersion: Integer;
+    SessionId: string;
+    WorkspacePath: string;
+    Messages: TArray<TGatewaySessionHistoryMessage>;
+    class function FromJson(const JsonText: string): TGatewaySessionHistoryResponse; static;
   end;
 
   TGatewayQuestionOption = record
@@ -360,6 +376,7 @@ begin
     Result.Id := ReadRequiredString(Root, 'id');
     Result.SdkSessionId := ReadOptionalString(Root, 'sdkSessionId');
     Result.WorkspacePath := ReadRequiredString(Root, 'workspacePath');
+    Result.Title := ReadOptionalString(Root, 'title');
     Result.Status := ReadRequiredString(Root, 'status');
     Result.CreatedAt := ReadRequiredString(Root, 'createdAt');
     Result.UpdatedAt := ReadRequiredString(Root, 'updatedAt');
@@ -396,6 +413,47 @@ begin
     Result.SessionId := ReadRequiredString(Root, 'sessionId');
     Result.RunId := ReadOptionalString(Root, 'runId');
     Result.Status := ReadRequiredString(Root, 'status');
+  finally
+    RootValue.Free;
+  end;
+end;
+
+class function TGatewaySessionHistoryResponse.FromJson(const JsonText: string): TGatewaySessionHistoryResponse;
+var
+  RootValue: TJSONValue;
+  Root: TJSONObject;
+  MessagesValue: TJSONValue;
+  MessagesArray: TJSONArray;
+  MessageObject: TJSONObject;
+  I: Integer;
+begin
+  SetLength(Result.Messages, 0);
+  RootValue := TJSONObject.ParseJSONValue(JsonText);
+  try
+    if not (RootValue is TJSONObject) then
+      raise EInvalidOperation.Create('Session history response is not a JSON object.');
+
+    Root := TJSONObject(RootValue);
+    Result.ProtocolVersion := ReadRequiredInteger(Root, 'protocolVersion');
+    Result.SessionId := ReadRequiredString(Root, 'sessionId');
+    Result.WorkspacePath := ReadOptionalString(Root, 'workspacePath');
+    MessagesValue := Root.GetValue('messages');
+    if not (MessagesValue is TJSONArray) then
+      Exit;
+
+    MessagesArray := TJSONArray(MessagesValue);
+    SetLength(Result.Messages, MessagesArray.Count);
+    for I := 0 to MessagesArray.Count - 1 do
+    begin
+      if MessagesArray.Items[I] is TJSONObject then
+      begin
+        MessageObject := TJSONObject(MessagesArray.Items[I]);
+        Result.Messages[I].Role := ReadRequiredString(MessageObject, 'role');
+        Result.Messages[I].Uuid := ReadRequiredString(MessageObject, 'uuid');
+        Result.Messages[I].SessionId := ReadRequiredString(MessageObject, 'sessionId');
+        Result.Messages[I].Text := ReadOptionalString(MessageObject, 'text');
+      end;
+    end;
   finally
     RootValue.Free;
   end;

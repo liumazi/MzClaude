@@ -169,6 +169,10 @@ begin
       Session := FViewModel.RecentSessions[I];
       Item := SessionsListView.Items.Add;
       Item.Caption := Session.WorkspacePath;
+      if Session.Title <> '' then
+        Item.SubItems.Add(Session.Title)
+      else
+        Item.SubItems.Add('-');
       Item.SubItems.Add(Session.Status);
       Item.SubItems.Add(Session.UpdatedAt);
       if Session.SdkSessionId <> '' then

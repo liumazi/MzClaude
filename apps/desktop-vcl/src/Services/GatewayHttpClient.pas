@@ -65,10 +65,23 @@ type
     ErrorMessage: string;
   end;
 
+  TGatewaySessionHistoryResult = record
+    Status: TGatewayCommandStatus;
+    StatusCode: Integer;
+    History: TGatewaySessionHistoryResponse;
+    ErrorMessage: string;
+  end;
+
   TGatewayHttpClient = class
   public
     function CheckHealth(const Settings: TGatewaySettings): TGatewayHealthCheckResult;
-    function ListSessions(const Settings: TGatewaySettings): TGatewayListSessionsResult;
+    function ListSessions(
+      const Settings: TGatewaySettings;
+      const WorkspacePath: string = ''): TGatewayListSessionsResult;
+    function GetSessionHistory(
+      const Settings: TGatewaySettings;
+      const SdkSessionId: string;
+      const WorkspacePath: string = ''): TGatewaySessionHistoryResult;
     function CreateSession(
       const Settings: TGatewaySettings;
       const Request: TGatewayCreateSessionRequest): TGatewayCreateSessionResult;
@@ -92,6 +105,7 @@ uses
   System.Classes,
   System.Net.HttpClient,
   System.Net.URLClient,
+  System.NetEncoding,
   System.SysUtils;
 
 function BuildJsonHeaders(const Settings: TGatewaySettings): TNetHeaders;
@@ -192,22 +206,29 @@ begin
   end;
 end;
 
-function TGatewayHttpClient.ListSessions(const Settings: TGatewaySettings): TGatewayListSessionsResult;
+function TGatewayHttpClient.ListSessions(
+  const Settings: TGatewaySettings;
+  const WorkspacePath: string): TGatewayListSessionsResult;
 var
   Client: THTTPClient;
   Headers: TNetHeaders;
   Response: IHTTPResponse;
   Body: string;
+  Url: string;
 begin
   Result.Status := gcConnectionFailed;
   Result.StatusCode := 0;
   Result.ErrorMessage := '';
 
+  Url := Settings.BaseUrl + '/api/sessions?limit=50';
+  if WorkspacePath <> '' then
+    Url := Url + '&workspacePath=' + TNetEncoding.URL.Encode(WorkspacePath);
+
   Headers := BuildGetHeaders(Settings);
   Client := THTTPClient.Create;
   try
     try
-      Response := Client.Get(Settings.BaseUrl + '/api/sessions', nil, Headers);
+      Response := Client.Get(Url, nil, Headers);
       Result.StatusCode := Response.StatusCode;
       Body := Response.ContentAsString(TEncoding.UTF8);
 
@@ -215,6 +236,80 @@ begin
       begin
         try
           Result.Sessions := TGatewaySessionListResponse.FromJson(Body);
+          Result.Status := gcSuccess;
+        except
+          on E: Exception do
+          begin
+            Result.Status := gcInvalidResponse;
+            Result.ErrorMessage := E.Message;
+          end;
+        end;
+        Exit;
+      end;
+
+      if Response.StatusCode = 401 then
+      begin
+        Result.Status := gcUnauthorized;
+        try
+          Result.ErrorMessage := TGatewayErrorResponse.FromJson(Body).Message;
+        except
+          Result.ErrorMessage := 'Gateway rejected the configured launch token.';
+        end;
+        Exit;
+      end;
+
+      Result.Status := gcHttpError;
+      try
+        Result.ErrorMessage := TGatewayErrorResponse.FromJson(Body).Message;
+      except
+        Result.ErrorMessage := Format('Gateway returned HTTP %d.', [Response.StatusCode]);
+      end;
+    except
+      on E: Exception do
+      begin
+        Result.Status := gcConnectionFailed;
+        Result.ErrorMessage := E.Message;
+      end;
+    end;
+  finally
+    Client.Free;
+  end;
+end;
+
+function TGatewayHttpClient.GetSessionHistory(
+  const Settings: TGatewaySettings;
+  const SdkSessionId: string;
+  const WorkspacePath: string): TGatewaySessionHistoryResult;
+var
+  Client: THTTPClient;
+  Headers: TNetHeaders;
+  Response: IHTTPResponse;
+  Body: string;
+  Url: string;
+begin
+  Result.Status := gcConnectionFailed;
+  Result.StatusCode := 0;
+  Result.ErrorMessage := '';
+
+  Url := Format('%s/api/sessions/%s/history?limit=200', [
+    Settings.BaseUrl,
+    TNetEncoding.URL.Encode(SdkSessionId)
+  ]);
+  if WorkspacePath <> '' then
+    Url := Url + '&workspacePath=' + TNetEncoding.URL.Encode(WorkspacePath);
+
+  Headers := BuildGetHeaders(Settings);
+  Client := THTTPClient.Create;
+  try
+    try
+      Response := Client.Get(Url, nil, Headers);
+      Result.StatusCode := Response.StatusCode;
+      Body := Response.ContentAsString(TEncoding.UTF8);
+
+      if Response.StatusCode = 200 then
+      begin
+        try
+          Result.History := TGatewaySessionHistoryResponse.FromJson(Body);
           Result.Status := gcSuccess;
         except
           on E: Exception do

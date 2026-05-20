@@ -13,6 +13,8 @@ import type { GatewayConfig } from "../src/config/config.js";
 import type { AgentRunRequest } from "../src/agent/agentRunner.js";
 import type { GatewayEvent } from "../src/protocol/types.js";
 import { SessionStore } from "../src/sessions/sessionStore.js";
+import type { SdkSessionService } from "../src/sessions/sdkSessionService.js";
+import type { SDKSessionInfo, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
 const baseConfig: GatewayConfig = {
   protocolVersion: 1,
@@ -424,31 +426,54 @@ test("POST /api/sessions/{id}/approvals/{requestId} returns a denial reason to t
   }
 });
 
-test("GET /api/sessions returns recent sessions ordered by updatedAt", async () => {
+test("GET /api/sessions returns SDK sessions from listSessions", async () => {
   const workspacePath = await createTempWorkspace();
+  const sdkSessions: SDKSessionInfo[] = [
+    {
+      sessionId: "sdk-newer",
+      summary: "Newer session",
+      lastModified: 2_000,
+      cwd: workspacePath,
+      createdAt: 1_000
+    },
+    {
+      sessionId: "sdk-older",
+      summary: "Older session",
+      lastModified: 1_000,
+      cwd: workspacePath,
+      createdAt: 500
+    }
+  ];
+  let capturedDir: string | undefined;
   const gateway = createGatewayServer({
     config: { ...baseConfig, dataDir: undefined },
     logger: silentLogger(),
-    sessionStore: new SessionStore()
+    sdkSessionService: createMockSdkSessionService({
+      listSessions: async (options) => {
+        capturedDir = options?.workspacePath;
+        return sdkSessions;
+      }
+    })
   });
   await gateway.start();
 
   try {
-    const first = await createSession(gateway.port, workspacePath);
-    const second = await createSession(gateway.port, workspacePath);
-    const response = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions`, {
-      headers: jsonHeaders()
-    });
+    const response = await fetch(
+      `http://127.0.0.1:${gateway.port}/api/sessions?workspacePath=${encodeURIComponent(workspacePath)}`,
+      { headers: jsonHeaders() }
+    );
     const body = await response.json() as {
       protocolVersion: number;
-      sessions: { id: string; workspacePath: string }[];
+      sessions: { id: string; sdkSessionId?: string; workspacePath: string; title?: string }[];
     };
 
     assert.equal(response.status, 200);
     assert.equal(body.protocolVersion, 1);
     assert.equal(body.sessions.length, 2);
-    assert.equal(body.sessions[0].id, second.id);
-    assert.equal(body.sessions[1].id, first.id);
+    assert.equal(capturedDir, workspacePath);
+    assert.equal(body.sessions[0].id, "sdk-newer");
+    assert.equal(body.sessions[0].sdkSessionId, "sdk-newer");
+    assert.equal(body.sessions[0].title, "Newer session");
     assert.equal(body.sessions[0].workspacePath, workspacePath);
   } finally {
     await gateway.stop();
@@ -456,39 +481,34 @@ test("GET /api/sessions returns recent sessions ordered by updatedAt", async () 
   }
 });
 
-test("GET /api/sessions survives gateway restart when dataDir is configured", async () => {
+test("GET /api/sessions prepends active gateway sessions not yet in SDK list", async () => {
   const workspacePath = await createTempWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "mzclaude-gateway-data-"));
-  const config: GatewayConfig = {
-    ...baseConfig,
-    dataDir
-  };
-
-  const firstGateway = createGatewayServer({
-    config,
+  const store = new SessionStore();
+  const gateway = createGatewayServer({
+    config: { ...baseConfig, dataDir: undefined },
     logger: silentLogger(),
-    sessionStore: new SessionStore(dataDir)
+    sessionStore: store,
+    sdkSessionService: createMockSdkSessionService({
+      listSessions: async () => []
+    }),
+    agentRunner: {
+      run: async function* (request: AgentRunRequest): AsyncGenerator<GatewayEvent> {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        yield createTestEvent(request.sessionId, "result", { status: "success", text: "ok" }, request.runId);
+      }
+    }
   });
-  await firstGateway.start();
-
-  let sessionId = "";
-  try {
-    const session = await createSession(firstGateway.port, workspacePath);
-    sessionId = session.id;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  } finally {
-    await firstGateway.stop();
-  }
-
-  const secondGateway = createGatewayServer({
-    config,
-    logger: silentLogger(),
-    sessionStore: new SessionStore(dataDir)
-  });
-  await secondGateway.start();
+  await gateway.start();
 
   try {
-    const response = await fetch(`http://127.0.0.1:${secondGateway.port}/api/sessions`, {
+    const session = await createSession(gateway.port, workspacePath);
+    await fetch(`http://127.0.0.1:${gateway.port}/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ prompt: "Working" })
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions`, {
       headers: jsonHeaders()
     });
     const body = await response.json() as {
@@ -497,20 +517,104 @@ test("GET /api/sessions survives gateway restart when dataDir is configured", as
 
     assert.equal(response.status, 200);
     assert.equal(body.sessions.length, 1);
-    assert.equal(body.sessions[0].id, sessionId);
-    assert.equal(body.sessions[0].status, "idle");
+    assert.equal(body.sessions[0].id, session.id);
+    assert.equal(body.sessions[0].status, "running");
   } finally {
-    await secondGateway.stop();
+    await gateway.stop();
     await fs.rm(workspacePath, { recursive: true, force: true });
-    await fs.rm(dataDir, { recursive: true, force: true });
   }
 });
 
-test("POST /api/sessions persists sdkSessionId after a successful run", async () => {
+test("GET /api/sessions/{id}/history returns mapped messages", async () => {
   const workspacePath = await createTempWorkspace();
+  const historyMessages: SessionMessage[] = [
+    {
+      type: "user",
+      uuid: "u1",
+      session_id: "sdk-history-1",
+      message: { content: [{ type: "text", text: "Hello" }] },
+      parent_tool_use_id: null
+    },
+    {
+      type: "assistant",
+      uuid: "a1",
+      session_id: "sdk-history-1",
+      message: { content: [{ type: "text", text: "Hi back" }] },
+      parent_tool_use_id: null
+    }
+  ];
+  let capturedSessionId = "";
   const gateway = createGatewayServer({
     config: baseConfig,
     logger: silentLogger(),
+    sdkSessionService: createMockSdkSessionService({
+      getSessionMessages: async (sessionId, options) => {
+        capturedSessionId = sessionId;
+        assert.equal(options?.workspacePath, workspacePath);
+        return historyMessages;
+      }
+    })
+  });
+  await gateway.start();
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${gateway.port}/api/sessions/sdk-history-1/history?workspacePath=${encodeURIComponent(workspacePath)}`,
+      { headers: jsonHeaders() }
+    );
+    const body = await response.json() as {
+      sessionId: string;
+      messages: { role: string; text: string }[];
+    };
+
+    assert.equal(response.status, 200);
+    assert.equal(capturedSessionId, "sdk-history-1");
+    assert.equal(body.sessionId, "sdk-history-1");
+    assert.equal(body.messages.length, 2);
+    assert.equal(body.messages[0].role, "user");
+    assert.equal(body.messages[0].text, "Hello");
+    assert.equal(body.messages[1].role, "assistant");
+    assert.equal(body.messages[1].text, "Hi back");
+  } finally {
+    await gateway.stop();
+    await fs.rm(workspacePath, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/sessions/{id}/history returns 404 when session is unknown", async () => {
+  const gateway = createGatewayServer({
+    config: baseConfig,
+    logger: silentLogger(),
+    sdkSessionService: createMockSdkSessionService({
+      getSessionMessages: async () => [],
+      getSessionInfo: async () => undefined
+    })
+  });
+  await gateway.start();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions/missing-session/history`, {
+      headers: jsonHeaders()
+    });
+    const body = await response.json() as { error: { code: string } };
+
+    assert.equal(response.status, 404);
+    assert.equal(body.error.code, "session_not_found");
+  } finally {
+    await gateway.stop();
+  }
+});
+
+test("POST /api/sessions stores sdkSessionId on gateway session after a successful run", async () => {
+  const workspacePath = await createTempWorkspace();
+  const store = new SessionStore();
+  const gateway = createGatewayServer({
+    config: baseConfig,
+    logger: silentLogger(),
+    sessionStore: store,
+    sdkSessionService: createMockSdkSessionService({
+      listSessions: async () => []
+    }),
     agentRunner: {
       run: async function* ({ sessionId, runId }): AsyncGenerator<GatewayEvent> {
         yield createTestEvent(sessionId, "result", {
@@ -531,16 +635,10 @@ test("POST /api/sessions persists sdkSessionId after a successful run", async ()
       body: JSON.stringify({ prompt: "Hello" })
     });
 
-    await waitFor(async () => {
-      const listResponse = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions`, {
-        headers: jsonHeaders()
-      });
-      const listBody = await listResponse.json() as {
-        sessions: { id: string; sdkSessionId?: string; status: string }[];
-      };
-      return listBody.sessions[0]?.sdkSessionId === "sdk-session-42"
-        && listBody.sessions[0]?.status === "idle";
-    });
+    await waitFor(async () => store.get(session.id)?.sdkSessionId === "sdk-session-42");
+    const gatewaySession = store.get(session.id);
+    assert.equal(gatewaySession?.sdkSessionId, "sdk-session-42");
+    assert.equal(gatewaySession?.status, "idle");
   } finally {
     await gateway.stop();
     await fs.rm(workspacePath, { recursive: true, force: true });
@@ -586,6 +684,7 @@ test("POST /api/sessions accepts resumeSessionId for SDK resume", async () => {
 
 test("POST /api/sessions/{id}/stop emits run_stopped and cancels the runner", async () => {
   const workspacePath = await createTempWorkspace();
+  const store = new SessionStore();
   let releaseRunner: (() => void) | undefined;
   const runnerCanFinish = new Promise<void>((resolve) => {
     releaseRunner = resolve;
@@ -593,6 +692,8 @@ test("POST /api/sessions/{id}/stop emits run_stopped and cancels the runner", as
   const gateway = createGatewayServer({
     config: baseConfig,
     logger: silentLogger(),
+    sessionStore: store,
+    sdkSessionService: createMockSdkSessionService(),
     agentRunner: {
       run: async function* (request: AgentRunRequest): AsyncGenerator<GatewayEvent> {
         yield createTestEvent(request.sessionId, "text_delta", { text: "Working" }, request.runId);
@@ -644,14 +745,7 @@ test("POST /api/sessions/{id}/stop emits run_stopped and cancels the runner", as
     assert.ok(stopEvent);
     assert.equal(stopEvent?.type, "run_stopped");
     assert.equal(stopEvent?.payload.reason, "user_cancelled");
-
-    const listResponse = await fetch(`http://127.0.0.1:${gateway.port}/api/sessions`, {
-      headers: jsonHeaders()
-    });
-    const listBody = await listResponse.json() as {
-      sessions: { id: string; status: string }[];
-    };
-    assert.equal(listBody.sessions[0].status, "stopped");
+    assert.equal(store.get(session.id)?.status, "stopped");
 
     socket.close();
   } finally {
@@ -761,6 +855,17 @@ test("POST /api/sessions/{id}/approvals/{requestId} answers a pending question r
     await fs.rm(workspacePath, { recursive: true, force: true });
   }
 });
+
+function createMockSdkSessionService(
+  overrides: Partial<SdkSessionService> = {}
+): SdkSessionService {
+  return {
+    listSessions: async () => [],
+    getSessionMessages: async () => [],
+    getSessionInfo: async () => undefined,
+    ...overrides
+  };
+}
 
 function sendRawUpgradeRequest(port: number): Promise<string> {
   return new Promise((resolve, reject) => {

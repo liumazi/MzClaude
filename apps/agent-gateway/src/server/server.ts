@@ -17,7 +17,18 @@ import type {
 } from "../protocol/types.js";
 import { PROTOCOL_VERSION } from "../protocol/types.js";
 import { ApprovalStore } from "../permissions/approvalStore.js";
-import { SessionStore, toSessionResponse, type GatewaySession } from "../sessions/sessionStore.js";
+import {
+  SessionStore,
+  toActiveGatewaySessionResponse,
+  toSessionResponse,
+  type GatewaySession
+} from "../sessions/sessionStore.js";
+import {
+  createSdkSessionService,
+  mapSdkSessionToResponse,
+  mapSessionMessagesToHistory,
+  type SdkSessionService
+} from "../sessions/sdkSessionService.js";
 import {
   isHttpRequestAuthorized,
   isWebSocketRequestAuthorized,
@@ -31,6 +42,7 @@ export type GatewayServerOptions = {
   logger: Logger;
   agentRunner?: AgentRunner;
   sessionStore?: SessionStore;
+  sdkSessionService?: SdkSessionService;
 };
 
 export type GatewayServer = {
@@ -47,7 +59,8 @@ type ActiveRun = {
 export function createGatewayServer(options: GatewayServerOptions): GatewayServer {
   const { config, logger } = options;
   const agentRunner = options.agentRunner ?? createSdkAgentRunner();
-  const sessionStore = options.sessionStore ?? new SessionStore(config.dataDir);
+  const sessionStore = options.sessionStore ?? new SessionStore();
+  const sdkSessionService = options.sdkSessionService ?? createSdkSessionService();
   const subscribers = new Map<string, Set<WebSocket>>();
   const activeRuns = new Map<string, ActiveRun>();
   const approvalStore = new ApprovalStore((event) => broadcast(subscribers, event));
@@ -70,7 +83,18 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       }
 
       if (request.method === "GET" && url.pathname === "/api/sessions") {
-        handleListSessions(response, sessionStore);
+        await handleListSessions(response, sessionStore, sdkSessionService, url);
+        return;
+      }
+
+      const historyRoute = matchSessionHistoryRoute(url.pathname);
+      if (request.method === "GET" && historyRoute) {
+        await handleGetSessionHistory(
+          response,
+          sdkSessionService,
+          historyRoute.sessionId,
+          url
+        );
         return;
       }
 
@@ -186,13 +210,62 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
 
   return gateway;
 
-  function handleListSessions(
+  async function handleListSessions(
     response: http.ServerResponse,
-    store: SessionStore
-  ): void {
+    store: SessionStore,
+    sdkSessions: SdkSessionService,
+    url: URL
+  ): Promise<void> {
+    const workspacePath = readOptionalQueryString(url, "workspacePath");
+    const limit = readOptionalQueryNumber(url, "limit");
+    const offset = readOptionalQueryNumber(url, "offset");
+
+    const sdkSessionList = await sdkSessions.listSessions({
+      workspacePath,
+      limit,
+      offset
+    });
+
+    const sessions = mergeSessionList(
+      sdkSessionList.map((info) => mapSdkSessionToResponse(info, workspacePath)),
+      store
+    );
+
     writeJson(response, 200, {
       protocolVersion: PROTOCOL_VERSION,
-      sessions: store.list().map(toSessionResponse)
+      sessions
+    });
+  }
+
+  async function handleGetSessionHistory(
+    response: http.ServerResponse,
+    sdkSessions: SdkSessionService,
+    sessionId: string,
+    url: URL
+  ): Promise<void> {
+    const workspacePath = readOptionalQueryString(url, "workspacePath");
+    const limit = readOptionalQueryNumber(url, "limit") ?? 200;
+    const offset = readOptionalQueryNumber(url, "offset");
+
+    const rawMessages = await sdkSessions.getSessionMessages(sessionId, {
+      workspacePath,
+      limit,
+      offset
+    });
+
+    if (rawMessages.length === 0) {
+      const info = await sdkSessions.getSessionInfo(sessionId, { workspacePath });
+      if (!info) {
+        writeError(response, 404, "session_not_found", "Session not found.");
+        return;
+      }
+    }
+
+    writeJson(response, 200, {
+      protocolVersion: PROTOCOL_VERSION,
+      sessionId,
+      workspacePath,
+      messages: mapSessionMessagesToHistory(rawMessages)
     });
   }
 
@@ -460,6 +533,40 @@ async function isDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function mergeSessionList(
+  sdkSessions: ReturnType<typeof mapSdkSessionToResponse>[],
+  store: SessionStore
+): ReturnType<typeof mapSdkSessionToResponse>[] {
+  const sdkIds = new Set(
+    sdkSessions.flatMap((session) => [session.id, session.sdkSessionId].filter(Boolean) as string[])
+  );
+  const activeGatewaySessions = store.listActive()
+    .filter((session) => !session.sdkSessionId || !sdkIds.has(session.sdkSessionId))
+    .map(toActiveGatewaySessionResponse);
+
+  return [...activeGatewaySessions, ...sdkSessions];
+}
+
+function readOptionalQueryString(url: URL, key: string): string | undefined {
+  const value = url.searchParams.get(key);
+  return value && value.trim() !== "" ? value : undefined;
+}
+
+function readOptionalQueryNumber(url: URL, key: string): number | undefined {
+  const value = url.searchParams.get(key);
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function matchSessionHistoryRoute(pathname: string): { sessionId: string } | undefined {
+  const match = /^\/api\/sessions\/([^/]+)\/history$/.exec(pathname);
+  return match ? { sessionId: decodeURIComponent(match[1]) } : undefined;
 }
 
 function matchSessionMessageRoute(pathname: string): { sessionId: string } | undefined {

@@ -10,7 +10,7 @@ async function main(): Promise<void> {
     secrets: [config.authToken],
     write: (line) => process.stderr.write(`${line}\n`)
   });
-  const sessionStore = new SessionStore(config.dataDir);
+  const sessionStore = new SessionStore();
   const gateway = createGatewayServer({ config, logger, sessionStore });
 
   await gateway.start();

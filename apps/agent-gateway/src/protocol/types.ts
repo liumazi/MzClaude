@@ -47,6 +47,20 @@ export type SessionListResponse = {
   sessions: SessionResponse[];
 };
 
+export type SessionHistoryMessage = {
+  role: "user" | "assistant" | "system";
+  uuid: string;
+  sessionId: string;
+  text: string;
+};
+
+export type SessionHistoryResponse = {
+  protocolVersion: typeof PROTOCOL_VERSION;
+  sessionId: string;
+  workspacePath?: string;
+  messages: SessionHistoryMessage[];
+};
+
 export type StopSessionResponse = {
   protocolVersion: typeof PROTOCOL_VERSION;
   sessionId: string;

@@ -194,7 +194,7 @@ begin
     Exit;
   end;
 
-  ListResult := FHttpClient.ListSessions(FSettings);
+  ListResult := FHttpClient.ListSessions(FSettings, FWorkspacePath);
   if ListResult.Status = gcSuccess then
     FRecentSessions := ListResult.Sessions.Sessions
   else
@@ -220,9 +220,37 @@ begin
   end;
 end;
 
+function FormatSessionHistoryTranscript(
+  const History: TGatewaySessionHistoryResponse): string;
+var
+  I: Integer;
+  LabelText: string;
+begin
+  Result := '';
+  for I := 0 to Length(History.Messages) - 1 do
+  begin
+    if Trim(History.Messages[I].Text) = '' then
+      Continue;
+
+    if History.Messages[I].Role = 'user' then
+      LabelText := 'User'
+    else if History.Messages[I].Role = 'assistant' then
+      LabelText := 'Assistant'
+    else
+      LabelText := 'System';
+
+    if Result <> '' then
+      Result := Result + sLineBreak;
+    Result := Result + Format('[%s]', [LabelText]) + sLineBreak + History.Messages[I].Text;
+  end;
+end;
+
 function TMainViewModel.RestoreSelectedSession: Boolean;
 var
   Selected: TGatewaySessionResponse;
+  HistoryResult: TGatewaySessionHistoryResult;
+  SdkSessionId: string;
+  WorkspacePath: string;
 begin
   Result := False;
 
@@ -230,17 +258,32 @@ begin
     Exit;
 
   Selected := FRecentSessions[FSelectedSessionIndex];
+  if Selected.SdkSessionId <> '' then
+    SdkSessionId := Selected.SdkSessionId
+  else
+    SdkSessionId := Selected.Id;
+
+  if Selected.WorkspacePath <> '' then
+    WorkspacePath := Selected.WorkspacePath
+  else
+    WorkspacePath := FWorkspacePath;
+
   DisconnectEvents;
-  FSession := Selected;
-  FWorkspacePath := Selected.WorkspacePath;
-  FResumeSdkSessionId := Selected.SdkSessionId;
-  FTranscriptText := Format(
-    'Restored session %s' + sLineBreak
-    + 'Workspace: %s' + sLineBreak
-    + 'SDK session: %s' + sLineBreak + sLineBreak,
-    [Selected.Id, Selected.WorkspacePath, Selected.SdkSessionId]);
+  ClearActiveSession;
+  FWorkspacePath := WorkspacePath;
+  FResumeSdkSessionId := SdkSessionId;
+  FTranscriptText := '';
+
+  HistoryResult := FHttpClient.GetSessionHistory(FSettings, SdkSessionId, WorkspacePath);
+  if HistoryResult.Status = gcSuccess then
+    FTranscriptText := FormatSessionHistoryTranscript(HistoryResult.History)
+  else
+    FTranscriptText := Format(
+      'Could not load session history: %s' + sLineBreak + sLineBreak,
+      [HistoryResult.ErrorMessage]);
+
+  Result := True;
   SetStatus(gcsConnected, 'Session restored', 'Ready to continue this conversation.');
-  Result := ConnectEventsForSession(FSession.Id);
   NotifyChatChanged;
 end;
 
@@ -344,6 +387,7 @@ begin
   FSession.Id := '';
   FSession.SdkSessionId := '';
   FSession.WorkspacePath := '';
+  FSession.Title := '';
   FSession.Status := '';
   FResumeSdkSessionId := '';
 end;
