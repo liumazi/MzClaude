@@ -1,3 +1,6 @@
+/**
+ * 读取并解析 HTTP JSON 请求体，限制最大 1MB，防止大包拖垮网关。
+ */
 import type { IncomingMessage } from "node:http";
 
 const MAX_JSON_BODY_BYTES = 1024 * 1024;
@@ -27,6 +30,7 @@ export async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
+/** 请求体读取/解析失败时抛出，由 server 映射为 400 */
 export class BodyReadError extends Error {
   constructor(
     readonly code: string,

@@ -1,3 +1,7 @@
+/**
+ * Claude Agent SDK 会话持久化层的薄封装。
+ * 将 SDK 的 listSessions / getSessionMessages / getSessionInfo 映射为网关协议类型。
+ */
 import {
   getSessionInfo,
   getSessionMessages,
@@ -20,6 +24,7 @@ export type GetSdkSessionHistoryOptions = {
   offset?: number;
 };
 
+/** 可注入的 SDK 会话服务，便于测试替换 */
 export type SdkSessionService = {
   listSessions: (options?: ListSdkSessionsOptions) => Promise<SDKSessionInfo[]>;
   getSessionMessages: (sessionId: string, options?: GetSdkSessionHistoryOptions) => Promise<SessionMessage[]>;
@@ -75,6 +80,7 @@ export async function getSdkSessionInfo(
   return getSessionInfo(sessionId, infoOptions);
 }
 
+/** 将 SDK 会话元数据转为 API SessionResponse；磁盘会话在列表中一律标为 idle */
 export function mapSdkSessionToResponse(
   info: SDKSessionInfo,
   fallbackWorkspace?: string
@@ -95,6 +101,7 @@ export function mapSdkSessionToResponse(
   };
 }
 
+/** 从 SDK 消息结构中提取纯文本，跳过空内容块 */
 export function mapSessionMessagesToHistory(messages: SessionMessage[]): SessionHistoryMessage[] {
   const history: SessionHistoryMessage[] = [];
 
@@ -115,6 +122,7 @@ export function mapSessionMessagesToHistory(messages: SessionMessage[]): Session
   return history;
 }
 
+/** 将历史消息格式化为可读 transcript（供调试或展示） */
 export function formatSessionHistoryTranscript(messages: SessionHistoryMessage[]): string {
   const lines: string[] = [];
 
@@ -134,6 +142,7 @@ export function formatSessionHistoryTranscript(messages: SessionHistoryMessage[]
   return lines.join("\n").trimEnd();
 }
 
+/** 兼容 string content 与 content[] 中带 type:text 的块 */
 export function extractMessageText(message: unknown): string {
   if (!isRecord(message)) {
     return "";

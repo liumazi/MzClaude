@@ -1,3 +1,17 @@
+/**
+ * Agent Gateway HTTP + WebSocket 服务核心。
+ *
+ * REST 路由：
+ *   GET  /api/health
+ *   GET  /api/sessions
+ *   GET  /api/sessions/:id/history
+ *   POST /api/sessions
+ *   POST /api/sessions/:id/messages
+ *   POST /api/sessions/:id/stop
+ *   POST /api/sessions/:id/approvals/:requestId
+ *
+ * WebSocket：GET /api/sessions/:id/events（升级后推送 GatewayEvent）
+ */
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
@@ -40,6 +54,7 @@ import { createErrorResponse, writeError, writeJson } from "./errors.js";
 export type GatewayServerOptions = {
   config: GatewayConfig;
   logger: Logger;
+  /** 可注入 mock，默认使用 SDK AgentRunner */
   agentRunner?: AgentRunner;
   sessionStore?: SessionStore;
   sdkSessionService?: SdkSessionService;
@@ -51,6 +66,7 @@ export type GatewayServer = {
   port: number;
 };
 
+/** 当前会话正在执行的 run 及其 AbortController */
 type ActiveRun = {
   runId: string;
   abortController: AbortController;
@@ -210,6 +226,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
 
   return gateway;
 
+  /** 合并 SDK 磁盘会话与内存中「进行中」的网关会话 */
   async function handleListSessions(
     response: http.ServerResponse,
     store: SessionStore,
@@ -253,6 +270,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       offset
     });
 
+    // 无消息时仍尝试 getSessionInfo，区分「空历史」与「会话不存在」
     if (rawMessages.length === 0) {
       const info = await sdkSessions.getSessionInfo(sessionId, { workspacePath });
       if (!info) {
@@ -291,6 +309,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     writeJson(response, 201, toSessionResponse(session));
   }
 
+  /** 异步启动 Agent；立即 202 返回 runId，进度经 WebSocket 推送 */
   async function handleSendMessage(
     request: http.IncomingMessage,
     response: http.ServerResponse,
@@ -403,6 +422,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     });
   }
 
+  /** 消费 AgentRunner 事件流，结束时更新 SessionStore 并清理 activeRuns */
   async function runAgent(
     runner: AgentRunner,
     store: SessionStore,
@@ -535,6 +555,7 @@ async function isDirectory(path: string): Promise<boolean> {
   }
 }
 
+/** 内存活跃会话置顶，避免与 SDK 列表中同 sdkSessionId 重复 */
 function mergeSessionList(
   sdkSessions: ReturnType<typeof mapSdkSessionToResponse>[],
   store: SessionStore
@@ -591,6 +612,7 @@ function matchSessionApprovalRoute(pathname: string): { sessionId: string; reque
     : undefined;
 }
 
+/** 注册 WebSocket；连接关闭时从订阅表移除 */
 function subscribe(subscribers: Map<string, Set<WebSocket>>, sessionId: string, socket: WebSocket): void {
   const sessionSubscribers = subscribers.get(sessionId) ?? new Set<WebSocket>();
   sessionSubscribers.add(socket);
@@ -634,6 +656,7 @@ function createEvent(
   };
 }
 
+/** WebSocket 升级失败时手写 HTTP 响应（尚未进入 ws 协议） */
 function writeUpgradeError(
   socket: NodeJS.WritableStream,
   statusCode: number,

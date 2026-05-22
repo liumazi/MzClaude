@@ -1,3 +1,7 @@
+/**
+ * Agent 执行器：通过 Claude Agent SDK query 驱动单次 run，
+ * 将 SDK 流式消息映射为网关 GatewayEvent，并经 ApprovalBridge 处理工具权限与用户问答。
+ */
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import { PROTOCOL_VERSION, type GatewayEvent } from "../protocol/types.js";
@@ -29,6 +33,7 @@ export function createSdkAgentRunner(): AgentRunner {
           model: request.session.model,
           resume: request.session.resumeSessionId ?? request.session.sdkSessionId,
           abortController: request.abortController,
+          // 工具调用前挂起，等待桌面端审批后 resolve
           canUseTool: (toolName, input, options) => request.approvals.requestPermission({
             toolName,
             input,
@@ -61,6 +66,7 @@ export function createSdkAgentRunner(): AgentRunner {
   };
 }
 
+/** 网关 permissionPreset 与 SDK permissionMode 的对应关系 */
 function normalizePermissionMode(permissionPreset: string) {
   if (permissionPreset === "readOnly") {
     return "plan";
@@ -73,6 +79,7 @@ function normalizePermissionMode(permissionPreset: string) {
   return "default";
 }
 
+/** 将 SDKMessage 转为零个或多个 GatewayEvent（流式仅产出 text_delta） */
 function* mapSdkMessage(sessionId: string, runId: string, message: SDKMessage): Generator<GatewayEvent> {
   if (message.type === "stream_event") {
     const text = extractTextDelta(message.event);

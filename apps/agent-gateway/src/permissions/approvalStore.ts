@@ -1,3 +1,7 @@
+/**
+ * 人机协同审批：将 SDK 的权限/问答/elicitation 请求转为 WebSocket 事件，
+ * 阻塞 Agent 直至客户端 POST 审批结果，再 resolve 对应 Promise。
+ */
 import crypto from "node:crypto";
 
 import type { ElicitationResult, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
@@ -17,6 +21,7 @@ export type QuestionApprovalRequest = {
   questions: QuestionRequestItem[];
 };
 
+/** 注入 AgentRunner，在 canUseTool / onElicitation 中调用 */
 export type ApprovalBridge = {
   requestPermission(request: PermissionApprovalRequest): Promise<PermissionResult>;
   requestQuestion(request: QuestionApprovalRequest): Promise<QuestionAnswerResult>;
@@ -75,6 +80,7 @@ export class ApprovalStore {
   constructor(private readonly emit: (event: GatewayEvent) => void) {
   }
 
+  /** 为单次 run 创建桥接对象，供 SDK 回调使用 */
   createBridge(sessionId: string, runId: string): ApprovalBridge {
     return {
       requestPermission: (request) => this.requestPermission(sessionId, runId, request),
@@ -83,6 +89,7 @@ export class ApprovalStore {
     };
   }
 
+  /** 处理客户端提交的审批；requestId 须属于当前 session */
   resolve(sessionId: string, requestId: string, request: SubmitApprovalRequest): ApprovalResolution {
     const pending = this.pending.get(requestId);
     if (!pending) {
@@ -157,6 +164,7 @@ export class ApprovalStore {
     return promise;
   }
 
+  /** MCP elicitation 简化为二选一 question_request，便于 UI 复用问答流 */
   private requestElicitation(
     sessionId: string,
     runId: string,

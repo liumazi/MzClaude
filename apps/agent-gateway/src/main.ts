@@ -1,3 +1,7 @@
+/**
+ * Agent Gateway 进程入口。
+ * 加载配置、启动 HTTP/WebSocket 服务，并向 stdout 输出就绪 JSON；支持 SIGINT/SIGTERM 优雅退出。
+ */
 import { loadGatewayConfig } from "./config/config.js";
 import { createLogger } from "./logging/logger.js";
 import { createGatewayServer } from "./server/server.js";
@@ -14,6 +18,7 @@ async function main(): Promise<void> {
   const gateway = createGatewayServer({ config, logger, sessionStore });
 
   await gateway.start();
+  // 向父进程（如桌面端）输出一行 JSON，表示网关已监听并可连接
   process.stdout.write(`${JSON.stringify({
     protocolVersion: config.protocolVersion,
     status: "ready",

@@ -1,13 +1,18 @@
+/**
+ * 网关配置加载：合并 default.agent.json、package.json 与命令行参数。
+ */
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+/** 安全相关开关（启动令牌、远程访问、日志脱敏等） */
 export type GatewaySecurityConfig = {
   requireLaunchToken: boolean;
   allowRemoteHosts: boolean;
   redactSecretsInLogs: boolean;
 };
 
+/** 运行时网关完整配置 */
 export type GatewayConfig = {
   protocolVersion: 1;
   version: string;
@@ -23,6 +28,7 @@ type LoadGatewayConfigOptions = {
   cwd?: string;
 };
 
+/** 仓库根目录 default.agent.json 的结构子集 */
 type DefaultAgentConfig = {
   protocolVersion: 1;
   gateway: {
@@ -32,6 +38,10 @@ type DefaultAgentConfig = {
   security: GatewaySecurityConfig;
 };
 
+/**
+ * 加载网关配置。
+ * 端口/主机可被 --port、--host 覆盖；未传 --auth-token 时随机生成 32 字节十六进制令牌。
+ */
 export function loadGatewayConfig(options: LoadGatewayConfigOptions = {}): GatewayConfig {
   const cwd = options.cwd ?? process.cwd();
   const argv = options.argv ?? process.argv.slice(2);
@@ -52,6 +62,7 @@ export function loadGatewayConfig(options: LoadGatewayConfigOptions = {}): Gatew
   };
 }
 
+/** 解析 --key value 或 --flag（无值时为空字符串） */
 function parseArgs(argv: string[]): Map<string, string> {
   const args = new Map<string, string>();
 

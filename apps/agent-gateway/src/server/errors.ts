@@ -1,3 +1,6 @@
+/**
+ * HTTP JSON 响应辅助：统一错误结构与 Content-Length 写入。
+ */
 import type { ServerResponse } from "node:http";
 
 import type { ErrorResponse } from "../protocol/types.js";
@@ -29,6 +32,7 @@ export function writeJson(
   response.end(body);
 }
 
+/** 写入协议约定的 error 对象并设置状态码 */
 export function writeError(
   response: ServerResponse,
   statusCode: number,
